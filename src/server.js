@@ -71,9 +71,10 @@ class Server {
     // Compression middleware
     this.app.use(compression());
 
-    // Rate limiting for API routes
-    this.app.use('/api/auth', authRateLimiter);
-    this.app.use('/api', apiRateLimiter);
+    // Rate limiting disabled for development
+    // Uncomment the following lines to enable rate limiting in production
+    // this.app.use('/api/auth', authRateLimiter);
+    // this.app.use('/api', apiRateLimiter);
   }
 
   // Initialize routes

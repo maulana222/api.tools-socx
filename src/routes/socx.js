@@ -1,5 +1,6 @@
 const express = require('express');
-const SocxTokenController = require('../controllers/socxTokenController');
+const SettingsController = require('../controllers/settingsController');
+const SocxProxyController = require('../controllers/socxProxyController');
 const { authenticateToken } = require('../middlewares/auth');
 
 const router = express.Router();
@@ -7,23 +8,28 @@ const router = express.Router();
 // All routes require authentication
 router.use(authenticateToken);
 
-// Save Socx API token
-router.post(
-  '/token',
-  SocxTokenController.saveValidation,
-  SocxTokenController.save
-);
+// Get all user settings
+router.get('/settings', SettingsController.getUserSettings);
 
-// Get active Socx API token
-router.get('/token', SocxTokenController.get);
+// Validate SOCX token with SOCX API
+router.get('/settings/validate-token', SettingsController.validateSocxToken);
 
-// Deactivate Socx API token
-router.post('/token/deactivate', SocxTokenController.deactivate);
+// Save or update user settings
+router.post('/settings', SettingsController.saveUserSettings);
 
-// Delete Socx API token
-router.delete('/token', SocxTokenController.delete);
+// Delete SOCX token
+router.delete('/settings/token', SettingsController.deleteSocxToken);
 
-// Get Socx token history
-router.get('/token/history', SocxTokenController.history);
+// Get SOCX base URL from settings
+router.get('/proxy/base-url', SocxProxyController.getBaseUrl);
+
+// Proxy request to SOCX API (generic)
+router.post('/proxy/request', SocxProxyController.proxySOCXRequest);
+
+// Proxy convenience methods
+router.post('/proxy/get/:endpoint(*)', SocxProxyController.proxyGet);
+router.post('/proxy/post/:endpoint(*)', SocxProxyController.proxyPost);
+router.post('/proxy/patch/:endpoint(*)', SocxProxyController.proxyPatch);
+router.post('/proxy/delete/:endpoint(*)', SocxProxyController.proxyDelete);
 
 module.exports = router;

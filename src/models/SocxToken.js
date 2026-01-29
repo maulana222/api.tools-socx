@@ -1,41 +1,27 @@
 const database = require('../config/database');
-const jwt = require('jsonwebtoken');
 
 class SocxToken {
   constructor(data) {
     this.id = data.id;
     this.userId = data.user_id;
-    this.apiToken = data.api_token;
+    this.token = data.api_token;
     this.isActive = data.is_active;
     this.expiresAt = data.expires_at;
     this.createdAt = data.created_at;
     this.updatedAt = data.updated_at;
   }
 
-  static async save(userId, apiToken) {
+  static async getByUserId(userId) {
     const sql = `
-      INSERT INTO socx_tokens (user_id, api_token, is_active, expires_at)
-      VALUES (?, ?, 1, ?)
-      ON DUPLICATE KEY UPDATE
-        api_token = VALUES(api_token),
-        is_active = 1,
-        expires_at = VALUES(expires_at),
-        updated_at = NOW()
+      SELECT id, user_id, api_token, is_active, expires_at, created_at, updated_at
+      FROM socx_tokens
+      WHERE user_id = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
     `;
 
-    // Decode token untuk mendapatkan expiry
-    let expiresAt = null;
-    try {
-      const decoded = jwt.decode(apiToken);
-      if (decoded && decoded.exp) {
-        expiresAt = new Date(decoded.exp * 1000);
-      }
-    } catch (error) {
-      console.error('Error decoding token:', error.message);
-    }
-
-    await database.query(sql, [userId, apiToken, expiresAt]);
-    return { success: true, expiresAt };
+    const results = await database.query(sql, [userId]);
+    return results.length > 0 ? new SocxToken(results[0]) : null;
   }
 
   static async getActive(userId) {
@@ -51,6 +37,33 @@ class SocxToken {
     return results.length > 0 ? new SocxToken(results[0]) : null;
   }
 
+  static async create(userId, tokenName, token) {
+    const sql = `
+      INSERT INTO socx_tokens (user_id, api_token, is_active, created_at, updated_at)
+      VALUES (?, ?, 1, NOW(), NOW())
+    `;
+
+    await database.query(sql, [userId, token]);
+    return { success: true };
+  }
+
+  static async update(userId, tokenName, token) {
+    const sql = `
+      UPDATE socx_tokens
+      SET api_token = ?, updated_at = NOW()
+      WHERE user_id = ?
+    `;
+
+    await database.query(sql, [token, userId]);
+    return { success: true };
+  }
+
+  static async delete(userId) {
+    const sql = 'DELETE FROM socx_tokens WHERE user_id = ?';
+    await database.query(sql, [userId]);
+    return { success: true };
+  }
+
   static async deactivate(userId) {
     const sql = `
       UPDATE socx_tokens
@@ -58,12 +71,6 @@ class SocxToken {
       WHERE user_id = ?
     `;
 
-    await database.query(sql, [userId]);
-    return { success: true };
-  }
-
-  static async delete(userId) {
-    const sql = 'DELETE FROM socx_tokens WHERE user_id = ?';
     await database.query(sql, [userId]);
     return { success: true };
   }
@@ -82,7 +89,7 @@ class SocxToken {
 
   isValid() {
     if (!this.isActive) return false;
-    if (!this.expiresAt) return true; // Tidak ada expiry, anggap valid
+    if (!this.expiresAt) return true;
     return new Date(this.expiresAt) > new Date();
   }
 
