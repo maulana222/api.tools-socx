@@ -159,7 +159,12 @@ const securityHeaders = helmet({
 const corsWhitelist = (req, res, next) => {
   const allowedOrigins = process.env.CORS_ORIGIN 
     ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
-    : ['http://localhost:9899', 'http://localhost:3000'];
+    : [
+        'http://localhost:9899', 
+        'http://localhost:3000',
+        'https://indotech.digiprosb.id',
+        'https://indotech.api.digiprosb.id'
+      ];
 
   const origin = req.headers.origin;
 
