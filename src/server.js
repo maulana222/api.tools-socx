@@ -6,6 +6,7 @@ const compression = require('compression');
 const authRoutes = require('./routes/auth');
 const socxRoutes = require('./routes/socx');
 const DashboardController = require('./controllers/dashboardController');
+const TransactionController = require('./controllers/transactionController');
 const { authenticateToken } = require('./middlewares/auth');
 
 // Import database connection
@@ -98,6 +99,11 @@ class Server {
 
     // Dashboard route
     this.app.get('/api/dashboard/stats', authenticateToken, DashboardController.getDashboardStats);
+
+    // Transaction routes
+    this.app.get('/api/transactions', authenticateToken, TransactionController.getTransactions);
+    this.app.get('/api/transactions/stats', authenticateToken, TransactionController.getTransactionStats);
+    this.app.get('/api/suppliers', authenticateToken, TransactionController.getSuppliers);
 
     // 404 handler for undefined routes
     this.app.use('*', (req, res) => {
