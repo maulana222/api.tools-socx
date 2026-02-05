@@ -28,12 +28,6 @@ exports.proxySOCXRequest = async (req, res) => {
     
     // Construct full URL
     const fullUrl = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint}`;
-    
-    console.log(`Proxying ${method} request to SOCX API:`, {
-      endpoint,
-      fullUrl,
-      baseUrl
-    });
 
     // Forward request to SOCX API
     const axiosConfig = {
@@ -51,12 +45,6 @@ exports.proxySOCXRequest = async (req, res) => {
     }
 
     const socxResponse = await axios(axiosConfig);
-
-    // Log response structure for debugging
-    console.log('SOCX API Response:', {
-      status: socxResponse.status,
-      data: socxResponse.data
-    });
 
     // Return SOCX response with same status code
     res.status(socxResponse.status).json(socxResponse.data);

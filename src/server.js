@@ -5,6 +5,12 @@ const compression = require('compression');
 // Import routes
 const authRoutes = require('./routes/auth');
 const socxRoutes = require('./routes/socx');
+const isimpleNumbersRoutes = require('./routes/isimpleNumbers');
+const isimplePhonesRoutes = require('./routes/isimplePhones');
+const projectsRoutes = require('./routes/projects');
+const promoProductsRoutes = require('./routes/promoProducts');
+const isimplePromoCheckRoutes = require('./routes/isimplePromoCheck');
+const isimpleProductsRoutes = require('./routes/isimpleProducts');
 const DashboardController = require('./controllers/dashboardController');
 const TransactionController = require('./controllers/transactionController');
 const { authenticateToken } = require('./middlewares/auth');
@@ -104,6 +110,27 @@ class Server {
     this.app.get('/api/transactions', authenticateToken, TransactionController.getTransactions);
     this.app.get('/api/transactions/stats', authenticateToken, TransactionController.getTransactionStats);
     this.app.get('/api/suppliers', authenticateToken, TransactionController.getSuppliers);
+
+    // Isimple Numbers routes
+    this.app.use('/api/isimple-numbers', isimpleNumbersRoutes);
+
+    // Isimple Phones routes
+    this.app.use('/api/isimple-phones', isimplePhonesRoutes);
+
+    // Projects routes
+    this.app.use('/api/projects', projectsRoutes);
+
+    // Promo Products routes
+    this.app.use('/api/promo-products', promoProductsRoutes);
+
+    // Isimple Promo Products routes (alias for promo-products)
+    this.app.use('/api/isimple-promo', promoProductsRoutes);
+
+    // Isimple Promo Check routes
+    this.app.use('/api/isimple-promo-check', isimplePromoCheckRoutes);
+
+    // Isimple Products (harga pasaran referensi)
+    this.app.use('/api/isimple-products', isimpleProductsRoutes);
 
     // 404 handler for undefined routes
     this.app.use('*', (req, res) => {

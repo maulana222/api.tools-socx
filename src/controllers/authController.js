@@ -118,7 +118,6 @@ class AuthController {
       // Check validation errors
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        console.log('❌ Validation failed:', errors.array());
         return res.status(400).json({
           success: false,
           message: 'Validation failed',
@@ -134,21 +133,14 @@ class AuthController {
                    await User.findByEmail(username.toLowerCase());
 
       if (!user) {
-        console.log('❌ User not found');
         return res.status(401).json({
           success: false,
           message: 'Invalid credentials'
         });
       }
 
-      console.log('✅ User found:', { username: user.username, email: user.email, hasPassword: !!user.password });
-
-      // Verify password
       const isPasswordValid = await user.verifyPassword(password);
-      console.log('🔐 Password valid:', isPasswordValid);
-      
       if (!isPasswordValid) {
-        console.log('❌ Password verification failed');
         return res.status(401).json({
           success: false,
           message: 'Invalid credentials'

@@ -30,8 +30,6 @@ exports.getTransactions = async (req, res) => {
       queryParams += `&q=${q}&v=${v}`;
     }
 
-    console.log(`Fetching transactions from SOCX API: ${baseUrl}/api/v1/transactions?${queryParams}`);
-
     // Fetch transactions from SOCX API
     const response = await axios.get(`${baseUrl}/api/v1/transactions?${queryParams}`, {
       headers: {
@@ -39,11 +37,6 @@ exports.getTransactions = async (req, res) => {
         'Content-Type': 'application/json'
       },
       timeout: 15000 // 15 seconds timeout
-    });
-
-    console.log('SOCX API Transactions Response:', {
-      status: response.status,
-      dataCount: Array.isArray(response.data) ? response.data.length : 0
     });
 
     // Get all transactions from page 1
@@ -99,11 +92,6 @@ exports.getSuppliers = async (req, res) => {
         'Content-Type': 'application/json'
       },
       timeout: 15000
-    });
-
-    console.log('SOCX API Suppliers Response:', {
-      status: response.status,
-      dataCount: Array.isArray(response.data) ? response.data.length : 0
     });
 
     const suppliers = Array.isArray(response.data) ? response.data : [];

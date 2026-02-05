@@ -48,7 +48,6 @@ exports.getDashboardStats = async (req, res) => {
           timeout: 10000 // 10 seconds timeout per request
         });
 
-        console.log(`SOCX API [${endpoint}]: Success`, response.data);
         return { key, data: response.data, status: 'success' };
       } catch (error) {
         console.error(`SOCX API [${endpoint}]: Error`, error.message);
@@ -114,12 +113,6 @@ exports.getDashboardStats = async (req, res) => {
           stats.data.totalSuppliersBalance = data.balance || 0;
           break;
       }
-    });
-
-    console.log('Dashboard Stats Aggregated:', {
-      success: stats.success,
-      errorsCount: stats.errors.length,
-      data: stats.data
     });
 
     res.json(stats);
