@@ -3,7 +3,7 @@ const db = require('../config/database');
 // Get all (harga pasaran referensi)
 exports.getAllProducts = async (req, res) => {
   try {
-    const rows = await db.query('SELECT id, name, price, created_at, updated_at FROM isimple_products ORDER BY name ASC');
+    const rows = await db.query('SELECT id, name, price, socx_code, created_at, updated_at FROM isimple_products ORDER BY name ASC');
     res.json({ success: true, data: Array.isArray(rows) ? rows : [] });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -63,10 +63,10 @@ exports.createProduct = async (req, res) => {
   }
 };
 
-// Update
+// Update (name, price, socx_code)
 exports.updateProduct = async (req, res) => {
   try {
-    const { name, price } = req.body;
+    const { name, price, socx_code } = req.body;
     const id = req.params.id;
     const rows = await db.query('SELECT * FROM isimple_products WHERE id = ?', [id]);
     if (!Array.isArray(rows) || !rows.length) {
@@ -74,9 +74,10 @@ exports.updateProduct = async (req, res) => {
     }
     const newName = name !== undefined ? name : rows[0].name;
     const newPrice = price !== undefined ? Number(price) : rows[0].price;
-    await db.query('UPDATE isimple_products SET name = ?, price = ? WHERE id = ?', [newName, newPrice, id]);
+    const newSocxCode = socx_code !== undefined ? (socx_code == null || socx_code === '' ? null : String(socx_code).trim()) : (rows[0].socx_code ?? null);
+    await db.query('UPDATE isimple_products SET name = ?, price = ?, socx_code = ? WHERE id = ?', [newName, newPrice, newSocxCode, id]);
     const updated = await db.query('SELECT * FROM isimple_products WHERE id = ?', [id]);
-    res.json({ success: true, data: Array.isArray(updated) && updated[0] ? updated[0] : { id, name: newName, price: newPrice } });
+    res.json({ success: true, data: Array.isArray(updated) && updated[0] ? updated[0] : { id, name: newName, price: newPrice, socx_code: newSocxCode } });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

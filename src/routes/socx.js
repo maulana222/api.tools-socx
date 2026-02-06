@@ -5,6 +5,12 @@ const { authenticateToken } = require('../middlewares/auth');
 
 const router = express.Router();
 
+// Debug: Log all requests to socx routes
+router.use((req, res, next) => {
+  console.log(`[SOCX Route] ${req.method} ${req.path}`);
+  next();
+});
+
 // All routes require authentication
 router.use(authenticateToken);
 
@@ -19,6 +25,23 @@ router.post('/settings', SettingsController.saveUserSettings);
 
 // Delete SOCX token
 router.delete('/settings/token', SettingsController.deleteSocxToken);
+
+// Apply promo ke SOCX (order/register) - HARUS SEBELUM /proxy/* untuk menghindari konflik
+router.post('/apply-promo', async (req, res, next) => {
+  console.log('[Route Debug] POST /apply-promo called');
+  console.log('[Route Debug] Method:', req.method);
+  console.log('[Route Debug] Path:', req.path);
+  console.log('[Route Debug] Original URL:', req.originalUrl);
+  console.log('[Route Debug] Body:', JSON.stringify(req.body, null, 2));
+  try {
+    await SocxProxyController.applyPromo(req, res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Sync harga Isimple → SOCX (ambil product by code, update suppliers_products + products)
+router.post('/isimple/sync-product-prices', SocxProxyController.syncIsimpleProductPrices);
 
 // Get SOCX base URL from settings
 router.get('/proxy/base-url', SocxProxyController.getBaseUrl);

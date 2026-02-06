@@ -101,6 +101,12 @@ class Server {
 
     // API routes
     this.app.use('/api/auth', authRoutes);
+    
+    // Debug: Log before registering socx routes
+    this.app.use('/api/socx', (req, res, next) => {
+      console.log(`[Server] ${req.method} ${req.originalUrl} - Before socxRoutes`);
+      next();
+    });
     this.app.use('/api/socx', socxRoutes);
 
     // Dashboard route

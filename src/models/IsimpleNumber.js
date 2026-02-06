@@ -20,13 +20,21 @@ class IsimpleNumber {
     return Array.isArray(rows) ? rows : [];
   }
 
-  /** Get isimple_number by project + number; create if not exists (untuk sync dari isimple_phones) */
+  /** Get isimple_number by project + number; create if not exists (untuk sync dari isimple_phones). Handle race: jika INSERT duplikat, ambil row yang sudah ada. */
   static async getOrCreate(projectId, number) {
     const rows = await db.query('SELECT * FROM isimple_numbers WHERE project_id = ? AND number = ? LIMIT 1', [projectId, number]);
     if (Array.isArray(rows) && rows.length > 0) return rows[0];
-    const id = await this.create(number, projectId, null);
-    const created = await db.query('SELECT * FROM isimple_numbers WHERE id = ?', [id]);
-    return Array.isArray(created) && created.length ? created[0] : { id, project_id: projectId, number, name: null, status: 'pending' };
+    try {
+      const id = await this.create(number, projectId, null);
+      const created = await db.query('SELECT * FROM isimple_numbers WHERE id = ?', [id]);
+      return Array.isArray(created) && created.length ? created[0] : { id, project_id: projectId, number, name: null, status: 'pending' };
+    } catch (err) {
+      if (err.code === 'ER_DUP_ENTRY' || err.errno === 1062) {
+        const existing = await db.query('SELECT * FROM isimple_numbers WHERE project_id = ? AND number = ? LIMIT 1', [projectId, number]);
+        if (Array.isArray(existing) && existing.length > 0) return existing[0];
+      }
+      throw err;
+    }
   }
 
   static async create(number, projectId = 1, name = null) {
@@ -107,6 +115,7 @@ class IsimpleNumber {
       if (!promosByNumberId[nid]) promosByNumberId[nid] = [];
       promosByNumberId[nid].push({
         id: p.id,
+        isimple_number_id: p.isimple_number_id,
         product_code: p.product_code,
         product_name: p.product_name,
         product_amount: p.product_amount,
