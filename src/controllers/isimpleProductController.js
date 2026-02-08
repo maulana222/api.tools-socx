@@ -24,11 +24,12 @@ exports.getProductById = async (req, res) => {
   }
 };
 
-// Create — terima gb + days (+ price), backend menyusun nama: "Indosat Freedom Internet X GB Y Hari"
+// Create — terima gb + days + category (+ price), backend menyusun nama; jika sensasi: "Indosat Freedom Internet Sensasi X GB Y Hari"
 exports.createProduct = async (req, res) => {
   try {
-    const { gb, days, price, name } = req.body;
+    const { gb, days, price, name, category } = req.body;
     const priceNum = Number(price) || 0;
+    const isSensasi = String(category || '').toLowerCase() === 'sensasi';
 
     let nameToSave;
     if (gb != null && days != null) {
@@ -37,7 +38,8 @@ exports.createProduct = async (req, res) => {
       if (gbNum <= 0 || daysNum <= 0) {
         return res.status(400).json({ success: false, message: 'gb and days must be greater than 0' });
       }
-      nameToSave = `Indosat Freedom Internet ${gbNum} GB ${daysNum} Hari`;
+      const middle = isSensasi ? 'Sensasi ' : '';
+      nameToSave = `Indosat Freedom Internet ${middle}${gbNum} GB ${daysNum} Hari`;
     } else if (name) {
       const prefix = 'Indosat Freedom Internet ';
       const nameTrimmed = String(name).trim();

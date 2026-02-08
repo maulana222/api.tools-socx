@@ -77,6 +77,21 @@ const getSelectedProductsByProject = async (req, res) => {
   }
 };
 
+// Get jumlah nomor per product_code + total nomor untuk satu project (untuk angka & rate)
+const getCountsByProductCode = async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const [counts, totalNumbers] = await Promise.all([
+      PromoProduct.getCountsByProductCodePerProject(projectId),
+      PromoProduct.getTotalNumbersByProjectId(projectId)
+    ]);
+    res.json({ success: true, data: { counts, totalNumbers } });
+  } catch (error) {
+    console.error('Error fetching counts by product code:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch counts' });
+  }
+};
+
 // Create promo product
 const createPromoProduct = async (req, res) => {
   try {
@@ -191,6 +206,7 @@ module.exports = {
   getProductsStats,
   getSelectedProducts,
   getSelectedProductsByProject,
+  getCountsByProductCode,
   createPromoProduct,
   createBatchPromoProducts,
   updateProductSelected,

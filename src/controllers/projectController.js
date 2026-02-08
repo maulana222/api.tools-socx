@@ -98,15 +98,19 @@ exports.updateProject = async (req, res) => {
   }
 };
 
-// Delete project
+// Delete project (beserta promo_products dan isimple_numbers yang berelasi; isimple_phones tidak dihapus)
 exports.deleteProject = async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = await Project.delete(id);
+    const project = await Project.getById(id);
+    if (!project) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
+    }
+    const deleted = await Project.deleteWithRelated(id);
     if (deleted) {
       res.json({ success: true, message: 'Project deleted' });
     } else {
-      res.status(404).json({ success: false, message: 'Project not found' });
+      res.status(500).json({ success: false, message: 'Failed to delete project' });
     }
   } catch (error) {
     console.error('Error deleting project:', error);

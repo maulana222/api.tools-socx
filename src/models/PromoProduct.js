@@ -139,6 +139,35 @@ class PromoProduct {
     // and the relationship is through product_code = number, not through isimple_number_id
     return [];
   }
+
+  /** Jumlah nomor (distinct) per product_code untuk satu project. Return { product_code: number } */
+  static async getCountsByProductCodePerProject(projectId) {
+    const rows = await db.query(
+      `SELECT pp.product_code, COUNT(DISTINCT pp.isimple_number_id) AS jumlah_nomor
+       FROM promo_products pp
+       INNER JOIN isimple_numbers inum ON pp.isimple_number_id = inum.id
+       WHERE inum.project_id = ?
+       GROUP BY pp.product_code`,
+      [projectId]
+    );
+    const list = Array.isArray(rows) ? rows : [];
+    const result = {};
+    list.forEach((r) => {
+      const code = r.product_code ? String(r.product_code).trim() : '';
+      if (code) result[code] = Number(r.jumlah_nomor) || 0;
+    });
+    return result;
+  }
+
+  /** Total jumlah nomor (isimple_numbers) di project untuk hitung rate */
+  static async getTotalNumbersByProjectId(projectId) {
+    const rows = await db.query(
+      'SELECT COUNT(*) AS total FROM isimple_numbers WHERE project_id = ?',
+      [projectId]
+    );
+    const r = Array.isArray(rows) && rows.length ? rows[0] : { total: 0 };
+    return Number(r.total) || 0;
+  }
 }
 
 module.exports = PromoProduct;

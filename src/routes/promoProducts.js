@@ -18,6 +18,8 @@ router.get('/isimple-number/:isimple_number_id', authenticateToken, promoProduct
 // Get stats for isimple number (MUST COME FIRST before /:id)
 router.get('/stats/:isimple_number_id', authenticateToken, promoProductController.getProductsStats);
 
+// Get jumlah nomor per product_code (saat dropdown expand)
+router.get('/project/:projectId/counts-by-code', authenticateToken, promoProductController.getCountsByProductCode);
 // Get all promo products by project ID
 router.get('/project/:projectId', authenticateToken, promoProductController.getAllPromoProducts);
 
