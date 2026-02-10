@@ -38,10 +38,11 @@ const authRateLimiter = createRateLimiter(
   'Too many login attempts, please try again after 15 minutes.'
 );
 
-// Moderate rate limiter for API endpoints
+// API rate limiter: cukup longgar untuk penggunaan normal (dashboard polling 5s, progress 1.2s, navigasi)
+// 600/15min ≈ 40/min: muat dashboard (~12/min) + progress (~50/min) + endpoint lain
 const apiRateLimiter = createRateLimiter(
   15 * 60 * 1000, // 15 minutes
-  100, // 100 requests
+  600, // 600 requests per 15 min
   'Too many requests, please try again after 15 minutes.'
 );
 

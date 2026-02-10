@@ -80,7 +80,7 @@ class Server {
     // Compression middleware
     this.app.use(compression());
 
-    // Rate limiting: auth strict (5 attempts/15 min), API moderate (100/15 min)
+    // Rate limiting: /api/auth = 5 req/15 min (login brute-force); /api/* = 600 req/15 min (semua endpoint lain)
     this.app.use('/api/auth', authRateLimiter);
     this.app.use('/api', apiRateLimiter);
   }
