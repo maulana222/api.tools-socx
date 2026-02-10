@@ -89,13 +89,24 @@ exports.proxySOCXRequest = async (req, res) => {
   } catch (error) {
     console.error('Error proxying request to SOCX API:', error);
     
-    // Try to parse error if available
+    const status = error.response?.status;
+    const data = error.response?.data;
+    const socxMessage = data?.message || data?.error;
+    
+    // 401 dari SOCX = token SOCX (di Settings) expired/invalid — bukan token login app
+    if (status === 401) {
+      const msg = socxMessage && /expired|invalid|jwt/i.test(String(socxMessage))
+        ? 'SOCX token kadaluarsa atau tidak valid. Silakan perbarui SOCX Token di Pengaturan (Settings).'
+        : (socxMessage || 'Unauthorized');
+      return res.status(401).json({ error: msg, code: 'SOCX_TOKEN_INVALID' });
+    }
+    
     let errorMessage = 'Failed to proxy request to SOCX API';
     if (error.message) {
       errorMessage += `: ${error.message}`;
     }
     
-    res.status(500).json({ 
+    res.status(status && status >= 400 ? status : 500).json({ 
       error: errorMessage,
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
@@ -295,10 +306,13 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     logSync('Step 2: GET', modulesUrl);
     const modulesResp = await axios.get(`${baseUrl}${modulesUrl}`, { timeout: 30000, headers });
     const modules = Array.isArray(modulesResp.data) ? modulesResp.data : [];
-    const byProductCode = new Map();
+    const byProductCode = new Map(); // Key: product_code uppercase untuk case-insensitive comparison
     for (const m of modules) {
-      const pc = m?.product_code;
-      if (pc && !byProductCode.has(pc)) byProductCode.set(pc, m);
+      const pc = m?.product_code ? String(m.product_code).trim() : '';
+      if (pc) {
+        const pcUpper = pc.toUpperCase();
+        if (!byProductCode.has(pcUpper)) byProductCode.set(pcUpper, m);
+      }
     }
     logSync('Step 2: modules:', modules.length, '| unik product_code:', byProductCode.size);
 
@@ -308,6 +322,36 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     const modulesListResp = await axios.get(`${baseUrl}${modulesListUrl}`, { timeout: 30000, headers });
     const suppliersModules = Array.isArray(modulesListResp.data) ? modulesListResp.data : [];
     logSync('Step 2b: suppliers_modules:', suppliersModules.length);
+
+    // Step 2c: Hapus entry OTF_* yang tidak ada di request (cleanup sebelum sync)
+    const requestedCodes = new Set(list.map((p) => String(p.product_code || '').trim().toUpperCase()).filter(Boolean));
+    const toDelete = modules.filter((m) => {
+      const pc = String(m?.product_code || '').trim().toUpperCase();
+      return pc.startsWith('OTF_') && !requestedCodes.has(pc);
+    });
+    let deletedCount = 0;
+    if (toDelete.length > 0) {
+      logSync('Step 2c: Hapus', toDelete.length, 'entry OTF_* yang tidak ada di request');
+      for (const entry of toDelete) {
+        const deleteUrl = `${baseUrl}/api/v1/products_has_suppliers_modules/${entry.id}`;
+        try {
+          logSync('  DELETE', entry.id, '|', entry.product_code);
+          await axios.delete(deleteUrl, { timeout: 30000, headers });
+          deletedCount++;
+          // Hapus juga dari modules array agar tidak diproses di Step 3
+          const idx = modules.findIndex((m) => m.id === entry.id);
+          if (idx >= 0) modules.splice(idx, 1);
+          // Update byProductCode juga (gunakan uppercase untuk konsisten)
+          const pcUpper = entry.product_code ? String(entry.product_code).trim().toUpperCase() : '';
+          if (pcUpper) byProductCode.delete(pcUpper);
+        } catch (err) {
+          logSync('  ERROR delete', entry.id, ':', err.response?.status, err.response?.data?.message || err.message);
+        }
+      }
+      logSync('Step 2c: Berhasil hapus', deletedCount, 'dari', toDelete.length, 'entry');
+    } else {
+      logSync('Step 2c: Tidak ada entry OTF_* yang perlu dihapus');
+    }
 
     // Step 3: update suppliers_products price jika beda, atau create entry baru jika tidak ada
     // Urutkan promos berdasarkan harga (murah → mahal) untuk priority yang benar
@@ -337,10 +381,11 @@ exports.syncIsimpleProductPrices = async (req, res) => {
 
     logSync('Step 3: cek & update suppliers_products per promo (sorted by price)');
     for (const promo of sortedPromos) {
-      const promoCode = promo?.product_code ? String(promo.product_code) : '';
+      const promoCode = promo?.product_code ? String(promo.product_code).trim() : '';
       const amount = Number(promo?.product_amount || 0);
       if (!promoCode) continue;
-      const moduleRow = byProductCode.get(promoCode);
+      const promoCodeUpper = promoCode.toUpperCase();
+      const moduleRow = byProductCode.get(promoCodeUpper);
       if (!moduleRow) {
         // Product code tidak ditemukan → perlu create entry baru di products_has_suppliers_modules
         logSync('  ', promoCode, '→ not_found, cari suppliers_products...');
@@ -350,7 +395,7 @@ exports.syncIsimpleProductPrices = async (req, res) => {
           logSync('    GET', suppliersProductsUrl);
           const suppliersProductsResp = await axios.get(`${baseUrl}${suppliersProductsUrl}`, { timeout: 30000, headers });
           const suppliersProducts = Array.isArray(suppliersProductsResp.data) ? suppliersProductsResp.data : [];
-          let supplierProduct = suppliersProducts.find((sp) => String(sp.code || '').toUpperCase() === promoCode.toUpperCase());
+          let supplierProduct = suppliersProducts.find((sp) => String(sp.code || '').trim().toUpperCase() === promoCodeUpper);
           let suppliersProductsId;
           
           if (!supplierProduct) {
@@ -449,7 +494,7 @@ exports.syncIsimpleProductPrices = async (req, res) => {
       logSync('Step 4: skip (sama atau max_price 0)');
     }
 
-    logSync('Selesai | updated_suppliers:', updatedSuppliers, '| created:', created, '| product_price_updated:', productPriceUpdated);
+    logSync('Selesai | deleted:', deletedCount, '| updated_suppliers:', updatedSuppliers, '| created:', created, '| product_price_updated:', productPriceUpdated);
 
     return res.json({
       success: true,
@@ -457,9 +502,11 @@ exports.syncIsimpleProductPrices = async (req, res) => {
       summary: {
         input_promos: list.length,
         matched,
+        deleted: deletedCount,
         not_found: notFound,
         updated_suppliers: updatedSuppliers,
         skipped_suppliers: skippedSuppliers,
+        created,
         created_suppliers_products: createdSuppliersProducts,
         max_price: maxPrice,
         product_price_updated: productPriceUpdated
@@ -469,9 +516,12 @@ exports.syncIsimpleProductPrices = async (req, res) => {
   } catch (error) {
     const status = error.status || error.response?.status || 500;
     const data = error.response?.data;
-    const msg = data?.message || data?.error || error.message || 'Gagal sync harga ke SOCX';
+    let msg = data?.message || data?.error || error.message || 'Gagal sync harga ke SOCX';
+    if (status === 401 && msg && /expired|invalid|jwt/i.test(String(msg))) {
+      msg = 'SOCX token kadaluarsa atau tidak valid. Silakan perbarui SOCX Token di Pengaturan (Settings).';
+    }
     console.error('Error syncIsimpleProductPrices:', msg);
-    return res.status(status).json({ success: false, message: msg, error: msg });
+    return res.status(status).json({ success: false, message: msg, error: msg, code: status === 401 ? 'SOCX_TOKEN_INVALID' : undefined });
   }
 };
 

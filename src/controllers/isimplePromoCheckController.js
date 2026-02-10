@@ -13,6 +13,18 @@ let shouldStopCheckAll = false;
 const ISIMPLE_PROMO_CONCURRENCY = 20;
 /** Jeda antar batch (ms) */
 const ISIMPLE_PROMO_CHUNK_DELAY_MS = 200;
+/** Retry saat deadlock: maksimal percobaan */
+const DEADLOCK_RETRY_MAX = 3;
+/** Jeda sebelum retry (ms) */
+const DEADLOCK_RETRY_DELAY_MS = 150;
+
+/** Cek apakah error dari DB adalah deadlock (MySQL: ER_LOCK_DEADLOCK = 121) */
+function isDeadlockError(err) {
+  const msg = (err && err.message) ? String(err.message) : '';
+  if (/deadlock/i.test(msg)) return true;
+  if (err && (err.errno === 121 || err.code === 'ER_LOCK_DEADLOCK')) return true;
+  return false;
+}
 
 /**
  * Parse list dari response SOCX task hot_promo (format bisa bervariasi)
@@ -30,40 +42,64 @@ function parsePromoList(response) {
 /**
  * Proses satu nomor: request SOCX hot_promo, simpan/update hasil ke DB.
  * Dipanggil paralel per batch; tangkap error per nomor agar satu gagal tidak hentikan batch.
+ * Jika terjadi deadlock DB, otomatis retry sampai DEADLOCK_RETRY_MAX kali.
  */
 async function processOneIsimpleNumber(row, baseUrl, token, taskPayload, now) {
   const msisdn = row.number;
   const isimpleNumberId = row.id;
   const url = `${baseUrl}/api/v1/suppliers_modules/task`;
   const body = { ...taskPayload, payload: { msisdn } };
-  try {
-    const response = await axios.post(url, body, {
-      timeout: 30000,
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
+  let lastError;
+  for (let attempt = 1; attempt <= DEADLOCK_RETRY_MAX; attempt++) {
+    try {
+      const response = await axios.post(url, body, {
+        timeout: 30000,
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const list = parsePromoList(response);
+      await PromoProduct.deleteByIsimpleNumberId(isimpleNumberId);
+      if (list.length > 0) {
+        const products = list.map(p => ({
+          productName: p.name,
+          productCode: p.dnmcode || msisdn,
+          productAmount: p.amount ?? 0,
+          productType: p.type,
+          productTypeTitle: p.typetitle ?? p.name,
+          productCommission: p.commision ?? 0,
+          productGb: p.gb ?? p.product_gb ?? 0,
+          productDays: p.days ?? p.product_days ?? 0
+        }));
+        await PromoProduct.createBatch(isimpleNumberId, products);
       }
-    });
-    const list = parsePromoList(response);
-    await PromoProduct.deleteByIsimpleNumberId(isimpleNumberId);
-    if (list.length > 0) {
-      const products = list.map(p => ({
-        productName: p.name,
-        productCode: p.dnmcode || msisdn,
-        productAmount: p.amount ?? 0,
-        productType: p.type,
-        productTypeTitle: p.typetitle ?? p.name,
-        productCommission: p.commision ?? 0,
-        productGb: p.gb ?? p.product_gb ?? 0,
-        productDays: p.days ?? p.product_days ?? 0
-      }));
-      await PromoProduct.createBatch(isimpleNumberId, products);
+      await IsimpleNumber.updateStatus(isimpleNumberId, 'processed', list.length, now);
+      return;
+    } catch (err) {
+      lastError = err;
+      if (attempt < DEADLOCK_RETRY_MAX && isDeadlockError(err)) {
+        const delay = DEADLOCK_RETRY_DELAY_MS + Math.floor(Math.random() * 100);
+        console.warn('[SOCX] Deadlock cek promo', msisdn, '| retry', attempt, '/', DEADLOCK_RETRY_MAX, 'setelah', delay, 'ms');
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      console.error('[SOCX] Error cek promo', msisdn, '|', err.message);
+      try {
+        await PromoProduct.deleteByIsimpleNumberId(isimpleNumberId);
+        await IsimpleNumber.updateStatus(isimpleNumberId, 'failed', 0, now);
+      } catch (cleanupErr) {
+        if (isDeadlockError(cleanupErr)) {
+          console.warn('[SOCX] Deadlock saat update status failed untuk', msisdn, '|', cleanupErr.message);
+        } else {
+          console.error('[SOCX] Cleanup error untuk', msisdn, '|', cleanupErr.message);
+        }
+      }
+      return;
     }
-    await IsimpleNumber.updateStatus(isimpleNumberId, 'processed', list.length, now);
-  } catch (err) {
-    console.error('[SOCX] Error cek promo', msisdn, '|', err.message);
-    await PromoProduct.deleteByIsimpleNumberId(isimpleNumberId);
-    await IsimpleNumber.updateStatus(isimpleNumberId, 'failed', 0, now);
+  }
+  if (lastError) {
+    console.error('[SOCX] Error cek promo setelah retry', msisdn, '|', lastError.message);
   }
 }
 
@@ -91,6 +127,17 @@ async function getNumbersFromIsimplePhones(projectId = 1) {
  */
 const checkAllPromoByProject = async (req, res) => {
   try {
+    // Cegah double-klik: jika proses cek promo masih berjalan (atau masih menyiapkan daftar nomor), tolak request baru
+    if (progressCheckAll.status === 'running') {
+      return res.status(409).json({
+        success: false,
+        started: false,
+        message: 'Proses cek promo masih berjalan. Tunggu selesai atau klik "Hentikan" dulu.',
+        total: progressCheckAll.total,
+        processed: progressCheckAll.processed
+      });
+    }
+
     const projectId = req.body?.project_id ?? req.query?.project_id ?? 1;
 
     const userId = req.user?.id;
@@ -109,6 +156,13 @@ const checkAllPromoByProject = async (req, res) => {
       });
     }
 
+    // Tandai "running" sejak awal supaya klik kedua tidak masuk (sambil daftar nomor diambil dari DB)
+    progressCheckAll.status = 'running';
+    progressCheckAll.total = 0;
+    progressCheckAll.processed = 0;
+    progressCheckAll.currentNumber = null;
+    progressCheckAll.currentIndex = 0;
+
     // Sumber nomor: isimple_phones (lalu disinkron ke isimple_numbers untuk simpan hasil)
     let numbers = await getNumbersFromIsimplePhones(projectId);
     if (!numbers || numbers.length === 0) {
@@ -116,6 +170,7 @@ const checkAllPromoByProject = async (req, res) => {
       numbers = await IsimpleNumber.getByProject(projectId);
     }
     if (!numbers || numbers.length === 0) {
+      progressCheckAll.status = 'idle';
       return res.status(200).json({
         success: true,
         message: 'Tidak ada nomor. Isi tabel isimple_phones (nomor telepon) atau tambah nomor di project lewat "Tambah Produk".',
@@ -126,7 +181,10 @@ const checkAllPromoByProject = async (req, res) => {
 
     const total = numbers.length;
     shouldStopCheckAll = false;
-    progressCheckAll = { status: 'running', total, processed: 0, currentNumber: null, currentIndex: 0 };
+    progressCheckAll.total = total;
+    progressCheckAll.processed = 0;
+    progressCheckAll.currentNumber = null;
+    progressCheckAll.currentIndex = 0;
 
     res.status(200).json({
       success: true,

@@ -84,21 +84,12 @@ class User {
     return users.length > 0 ? new User(users[0]) : null;
   }
 
-  // Verify password
+  // Verify password (no logging of password/hash info to avoid info leakage)
   async verifyPassword(password) {
-    console.log('🔍 Verifying password...');
-    console.log('   Input password length:', password?.length);
-    console.log('   Stored password exists:', !!this.password);
-    console.log('   Stored password length:', this.password?.length);
-    
     if (!password || !this.password) {
-      console.log('❌ Missing password or stored password');
       return false;
     }
-    
-    const result = await bcrypt.compare(password, this.password);
-    console.log('   Bcrypt compare result:', result);
-    return result;
+    return bcrypt.compare(password, this.password);
   }
 
   // Update user

@@ -126,7 +126,6 @@ class AuthController {
       }
 
       const { username, password } = req.body;
-      console.log('🔑 Login attempt with username:', username);
 
       // Find user by username or email
       const user = await User.findByUsername(username.toLowerCase()) ||
