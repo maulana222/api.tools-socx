@@ -5,7 +5,7 @@ const getAllIsimplePhones = async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
-    const offset = (page - 1) * limit;
+    const offset = Math.max(0, (page - 1) * limit);
     const searchRaw = req.query.search != null ? String(req.query.search).trim() : '';
     const searchPattern = searchRaw ? `%${searchRaw}%` : null;
 
@@ -16,10 +16,13 @@ const getAllIsimplePhones = async (req, res) => {
     const countRows = await database.query(countSql, countParams);
     const total = Number(countRows[0]?.total ?? 0);
 
+    // LIMIT/OFFSET pakai nilai literal (integer) agar terhindar dari error mysqld_stmt_execute di MariaDB/MySQL
+    const limitVal = Number(limit) || 20;
+    const offsetVal = Number(offset) || 0;
     const listSql = searchPattern
-      ? 'SELECT id, phone_number, created_at FROM isimple_phones WHERE phone_number LIKE ? ORDER BY id ASC LIMIT ? OFFSET ?'
-      : 'SELECT id, phone_number, created_at FROM isimple_phones ORDER BY id ASC LIMIT ? OFFSET ?';
-    const listParams = searchPattern ? [searchPattern, limit, offset] : [limit, offset];
+      ? `SELECT id, phone_number, created_at FROM isimple_phones WHERE phone_number LIKE ? ORDER BY id ASC LIMIT ${limitVal} OFFSET ${offsetVal}`
+      : `SELECT id, phone_number, created_at FROM isimple_phones ORDER BY id ASC LIMIT ${limitVal} OFFSET ${offsetVal}`;
+    const listParams = searchPattern ? [searchPattern] : [];
     const phones = await database.query(listSql, listParams);
 
     const data = phones.map((p) => ({
@@ -274,8 +277,8 @@ const bulkDeleteByCount = async (req, res) => {
     const toDelete = Math.min(count, maxCount);
 
     const ids = await database.query(
-      'SELECT id FROM isimple_phones ORDER BY id ASC LIMIT ?',
-      [toDelete]
+      `SELECT id FROM isimple_phones ORDER BY id ASC LIMIT ${Number(toDelete)}`,
+      []
     );
     if (ids.length === 0) {
       return res.json({ success: true, deleted: 0 });

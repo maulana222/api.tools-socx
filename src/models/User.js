@@ -142,15 +142,17 @@ class User {
 
   // Get all users (admin only)
   static async findAll(limit = 10, offset = 0) {
+    const limitVal = Math.max(1, Number(limit) || 10);
+    const offsetVal = Math.max(0, Number(offset) || 0);
     const sql = `
       SELECT id, username, email, first_name, last_name, role, is_active, created_at, updated_at
       FROM users
       WHERE is_active = true
       ORDER BY created_at DESC
-      LIMIT ? OFFSET ?
+      LIMIT ${limitVal} OFFSET ${offsetVal}
     `;
 
-    const users = await database.query(sql, [limit, offset]);
+    const users = await database.query(sql, []);
     return users.map(user => new User(user));
   }
 }

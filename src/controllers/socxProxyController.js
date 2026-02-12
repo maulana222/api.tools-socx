@@ -207,10 +207,11 @@ exports.applyPromo = async (req, res) => {
     if (body && typeof body.body === 'object' && body.body !== null) {
       body = body.body;
     }
-    const { msisdn, product_code, product_name, product_amount, product_net_price, offer_id, provider } = body;
+    const { msisdn, product_name, product_amount, product_net_price, offer_id, provider } = body;
+    const product_code = body.product_code ?? body.productCode ?? '';
     const isTri = String(provider || '').toLowerCase() === 'tri';
 
-    if (!product_code) {
+    if (!product_code || String(product_code).trim() === '') {
       const receivedKeys = body && typeof body === 'object' ? Object.keys(body).join(', ') : 'none';
       return res.status(400).json({
         message: 'product_code wajib',
