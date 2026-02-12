@@ -37,7 +37,22 @@ class Database {
       const [rows] = await this.pool.execute(sql, params);
       return rows;
     } catch (error) {
-      console.error('Database query error:', error.message);
+      if (error.errno !== 1062) {
+        const isColumnCountError = error.errno === 1136 || (error.message && String(error.message).includes('Column count doesn\'t match'));
+        if (isColumnCountError) {
+          const placeholders = (sql.match(/\?/g) || []).length;
+          console.error('Database query error (column count):', {
+            message: error.message,
+            errno: error.errno,
+            code: error.code,
+            sqlParamsCount: Array.isArray(params) ? params.length : (params && params.length),
+            placeholderCountInSql: placeholders,
+            sqlPreview: sql.replace(/\s+/g, ' ').slice(0, 180)
+          });
+        } else {
+          console.error('Database query error:', error.message);
+        }
+      }
       throw error;
     }
   }

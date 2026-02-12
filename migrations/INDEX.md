@@ -36,6 +36,13 @@ SOURCE backend/migrations/schema_isimple_complete.sql;
 | `create_isimple_numbers_table.sql` | Membuat tabel isimple_numbers | ✅ Aktif |
 | `create_isimple_phones_table.sql` | Membuat tabel isimple_phones | ✅ Aktif (Legacy) |
 | `create_promo_products_table.sql` | Membuat tabel promo_products | ✅ Aktif |
+| `create_tri_numbers_table.sql` | Membuat tabel tri_numbers (nomor Tri per project) | ✅ Aktif |
+| `create_tri_promo_products_table.sql` | Membuat tabel tri_promo_products (hasil paket Tri per nomor) | ✅ Aktif |
+| `create_tri_products_table.sql` | Membuat tabel tri_products (referensi harga pasaran Tri Data Happy, incl. socx_code) | ✅ Aktif |
+| `add_socx_code_to_tri_products.sql` | Tambah kolom socx_code ke tri_products (jika tabel sudah ada tanpa kolom ini) | ✅ Opsional |
+| `add_extra_fields_to_tri_promo_products.sql` | Tambah kolom detail (offerId, registrationKey, dll.) ke tri_promo_products | ✅ Opsional |
+| `seed_tri_products.sql` | Seed data Tri Data Happy ke tri_products | ✅ Aktif |
+| `create_rita_phones_table.sql` | Membuat tabel rita_phones (sumber nomor untuk cek Tri Rita) | ✅ Aktif |
 | `create_isimple_products_table.sql` | Membuat tabel isimple_products | ⚠️ Tidak digunakan |
 | `add_project_id_to_isimple_numbers.sql` | Tambah kolom project_id | ✅ Aktif |
 | `add_promo_check_fields_to_isimple_phones.sql` | Tambah field pengecekan | ✅ Aktif |
@@ -52,6 +59,10 @@ SOURCE backend/migrations/schema_isimple_complete.sql;
 | `run-isimple-numbers-migration.js` | `create_isimple_numbers_table.sql` | ✅ Aktif |
 | `run-isimple-phones-migration.js` | `create_isimple_phones_table.sql` | ✅ Aktif |
 | `run-promo-products-migration.js` | `create_promo_products_table.sql` | ✅ Aktif |
+| `run-tri-tables-migration.js` | `create_tri_numbers_table.sql`, `create_tri_promo_products_table.sql` | ✅ Aktif |
+| `run-tri-products-migration.js` | `create_tri_products_table.sql`, `seed_tri_products.sql` | ✅ Aktif |
+| (manual) | `add_socx_code_to_tri_products.sql` — jalankan jika tri_products sudah ada tanpa socx_code | ✅ Opsional |
+| `run-rita-phones-migration.js` | `create_rita_phones_table.sql` | ✅ Aktif |
 | `run-isimple-products-migration.js` | `create_isimple_products_table.sql` | ⚠️ Tidak digunakan |
 | `run-add-project-id-migration.js` | `add_project_id_to_isimple_numbers.sql` | ✅ Aktif |
 | `run-add-promo-check-fields-migration.js` | `add_promo_check_fields_to_isimple_phones.sql` | ✅ Aktif |

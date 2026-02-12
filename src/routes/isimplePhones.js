@@ -8,11 +8,15 @@ const {
   batchCreateIsimplePhones,
   updateIsimplePhone,
   deleteIsimplePhone,
+  bulkDeleteByCount,
   updatePhoneAfterCheck
 } = require('../controllers/isimplePhoneController');
 
-// Get all isimple phones (with optional filters)
+// Get all isimple phones (with pagination: ?page=1&limit=20)
 router.get('/', authenticateToken, getAllIsimplePhones);
+
+// Bulk delete by count (must be before /:id)
+router.delete('/bulk', authenticateToken, bulkDeleteByCount);
 
 // Get isimple phone by ID
 router.get('/:id', authenticateToken, getIsimplePhoneById);

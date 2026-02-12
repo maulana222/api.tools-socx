@@ -137,3 +137,23 @@ exports.getIsimpleProject = async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to fetch isimple project' });
   }
 };
+
+// Get semua project dengan code = tri (untuk Tri Rita Produksi)
+exports.getTriProject = async (req, res) => {
+  try {
+    const projects = await Project.getAllByCode('tri');
+    const data = projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      code: p.code,
+      description: p.description || null,
+      status: p.status || 'active',
+      created_at: p.created_at,
+      updated_at: p.updated_at
+    }));
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error fetching tri projects:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch tri project' });
+  }
+};

@@ -54,27 +54,33 @@ class Project {
   }
 
   /**
-   * Hapus project beserta data yang berelasi (urutan: promo_products → isimple_numbers → projects).
-   * isimple_phones tidak dihapus (hanya daftar nomor untuk cek, bukan relasi ke project).
+   * Hapus project beserta data yang berelasi.
+   * Isimple: promo_products → isimple_numbers → projects
+   * Tri: tri_promo_products → tri_numbers → projects
    */
   static async deleteWithRelated(id) {
     const projectId = Number(id);
     if (!projectId) return false;
 
-    // 1. Ambil id isimple_numbers yang punya project_id ini
+    // 1. Hapus data Tri (jika project ini punya tri_numbers)
+    const triNumberRows = await db.query('SELECT id FROM tri_numbers WHERE project_id = ?', [projectId]);
+    const triNumberIds = Array.isArray(triNumberRows) ? triNumberRows.map((r) => r.id).filter(Boolean) : [];
+    if (triNumberIds.length > 0) {
+      const placeholders = triNumberIds.map(() => '?').join(',');
+      await db.query(`DELETE FROM tri_promo_products WHERE tri_number_id IN (${placeholders})`, triNumberIds);
+    }
+    await db.query('DELETE FROM tri_numbers WHERE project_id = ?', [projectId]);
+
+    // 2. Hapus data Isimple
     const numberRows = await db.query('SELECT id FROM isimple_numbers WHERE project_id = ?', [projectId]);
     const numberIds = Array.isArray(numberRows) ? numberRows.map((r) => r.id).filter(Boolean) : [];
-
-    // 2. Hapus promo_products yang mengacu ke isimple_numbers tersebut
     if (numberIds.length > 0) {
       const placeholders = numberIds.map(() => '?').join(',');
       await db.query(`DELETE FROM promo_products WHERE isimple_number_id IN (${placeholders})`, numberIds);
     }
-
-    // 3. Hapus isimple_numbers untuk project ini
     await db.query('DELETE FROM isimple_numbers WHERE project_id = ?', [projectId]);
 
-    // 4. Hapus project
+    // 3. Hapus project
     const result = await db.query('DELETE FROM projects WHERE id = ?', [projectId]);
     return (result && result.affectedRows > 0) || (Array.isArray(result) && result[0] && result[0].affectedRows > 0);
   }

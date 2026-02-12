@@ -43,6 +43,9 @@ router.post('/apply-promo', async (req, res, next) => {
 // Sync harga Isimple → SOCX (ambil product by code, update suppliers_products + products)
 router.post('/isimple/sync-product-prices', SocxProxyController.syncIsimpleProductPrices);
 
+// Daftar modul per supplier (untuk dropdown Modul di Daftar Produk Harga Pasar)
+router.get('/suppliers-modules/list/:supplierId', SocxProxyController.getSuppliersModulesList);
+
 // Get SOCX base URL from settings
 router.get('/proxy/base-url', SocxProxyController.getBaseUrl);
 

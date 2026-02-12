@@ -9,6 +9,9 @@ router.get('/', authenticateToken, projectController.getAllProjects);
 // Get isimple project specifically
 router.get('/isimple', authenticateToken, projectController.getIsimpleProject);
 
+// Get tri project specifically (Tri Rita Produksi)
+router.get('/tri', authenticateToken, projectController.getTriProject);
+
 // Get project by id (dua bentuk: /id/1 dan /1)
 router.get('/id/:id', authenticateToken, projectController.getProjectById);
 router.get('/:id', authenticateToken, projectController.getProjectById);

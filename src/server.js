@@ -11,6 +11,10 @@ const projectsRoutes = require('./routes/projects');
 const promoProductsRoutes = require('./routes/promoProducts');
 const isimplePromoCheckRoutes = require('./routes/isimplePromoCheck');
 const isimpleProductsRoutes = require('./routes/isimpleProducts');
+const triNumbersRoutes = require('./routes/triNumbers');
+const triProductsRoutes = require('./routes/triProducts');
+const triPromoProductsRoutes = require('./routes/triPromoProducts');
+const triPromoCheckRoutes = require('./routes/triPromoCheck');
 const DashboardController = require('./controllers/dashboardController');
 const TransactionController = require('./controllers/transactionController');
 const { authenticateToken } = require('./middlewares/auth');
@@ -26,7 +30,6 @@ const {
   securityHeaders,
   corsWhitelist,
   authRateLimiter,
-  apiRateLimiter,
   sanitizeInput,
   validateContentType,
   preventParameterPollution,
@@ -80,9 +83,8 @@ class Server {
     // Compression middleware
     this.app.use(compression());
 
-    // Rate limiting: /api/auth = 5 req/15 min (login brute-force); /api/* = 600 req/15 min (semua endpoint lain)
+    // Rate limiting: hanya /api/auth (5 req/15 min) untuk proteksi brute-force login
     this.app.use('/api/auth', authRateLimiter);
-    this.app.use('/api', apiRateLimiter);
   }
 
   // Initialize routes
@@ -136,6 +138,15 @@ class Server {
 
     // Isimple Products (harga pasaran referensi)
     this.app.use('/api/isimple-products', isimpleProductsRoutes);
+
+    // Tri Numbers (nomor per project + with-promos)
+    this.app.use('/api/tri-numbers', triNumbersRoutes);
+    // Tri Products (referensi harga pasaran Tri Data Happy)
+    this.app.use('/api/tri-products', triProductsRoutes);
+    // Tri Promo Products (promo per tri_number)
+    this.app.use('/api/tri-promo-products', triPromoProductsRoutes);
+    // Tri Rita / Tri Produksi: cek paket via backend → SOCX
+    this.app.use('/api/tri-promo-check', triPromoCheckRoutes);
 
     // 404 handler for undefined routes
     this.app.use('*', (req, res) => {

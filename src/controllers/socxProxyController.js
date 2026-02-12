@@ -261,14 +261,27 @@ exports.applyPromo = async (req, res) => {
  * 3) Untuk setiap promo dari frontend: kalau product_code ditemukan → update suppliers_products price (jika beda)
  * 4) Update products price dengan harga terbesar dari promo yang match (jika beda)
  *
- * Body: { socx_code: "IF14", promos: [{ product_code, product_name?, product_amount }] }
+ * Body: { socx_code, promos, suppliers_id?, suppliers_module_id?, suppliers_module_ids? }
+ * - suppliers_module_id: satu modul (backward compat).
+ * - suppliers_module_ids: array modul [40, 42] — hanya modul ini yang dipakai; kosong/tidak kirim = semua modul.
  */
 const isDev = process.env.NODE_ENV !== 'production';
 const logSync = (...args) => { if (isDev) console.log('[SOCX Sync]', ...args); };
 
+function parseSelectedModuleIds(suppliers_module_id, suppliers_module_ids) {
+  const arr = Array.isArray(suppliers_module_ids) ? suppliers_module_ids : [];
+  const ids = arr.map((id) => Number(id)).filter((n) => !Number.isNaN(n));
+  if (ids.length > 0) return ids;
+  if (suppliers_module_id != null && suppliers_module_id !== '') {
+    const one = Number(suppliers_module_id);
+    if (!Number.isNaN(one)) return [one];
+  }
+  return null;
+}
+
 exports.syncIsimpleProductPrices = async (req, res) => {
   try {
-    const { socx_code, promos, providers_id, categories_id, suppliers_id } = req.body || {};
+    const { socx_code, promos, providers_id, categories_id, suppliers_id, suppliers_module_id, suppliers_module_ids } = req.body || {};
     const code = socx_code != null ? String(socx_code).trim() : '';
     const list = Array.isArray(promos) ? promos : [];
     // Default: providers_id = 2 (Indosat), categories_id = 2 (data) — sesuai contoh dari SOCX
@@ -276,6 +289,7 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     const categoryId = categories_id != null ? Number(categories_id) : 2;
     // suppliers_id untuk iSimple (default 35)
     const supplierId = suppliers_id != null ? Number(suppliers_id) : 35;
+    const selectedModuleIds = parseSelectedModuleIds(suppliers_module_id, suppliers_module_ids);
     if (!code) {
       return res.status(400).json({ success: false, message: 'socx_code wajib diisi' });
     }
@@ -306,12 +320,15 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     logSync('Step 2: GET', modulesUrl);
     const modulesResp = await axios.get(`${baseUrl}${modulesUrl}`, { timeout: 30000, headers });
     const modules = Array.isArray(modulesResp.data) ? modulesResp.data : [];
-    const byProductCode = new Map(); // Key: product_code uppercase untuk case-insensitive comparison
+    const byProductCode = new Map(); // product_code_upper -> first row (backward compat)
+    const byProductCodeAndModule = new Map(); // product_code_upper -> Map(suppliers_modules_id -> row)
     for (const m of modules) {
       const pc = m?.product_code ? String(m.product_code).trim() : '';
       if (pc) {
         const pcUpper = pc.toUpperCase();
         if (!byProductCode.has(pcUpper)) byProductCode.set(pcUpper, m);
+        if (!byProductCodeAndModule.has(pcUpper)) byProductCodeAndModule.set(pcUpper, new Map());
+        byProductCodeAndModule.get(pcUpper).set(Number(m.suppliers_modules_id), m);
       }
     }
     logSync('Step 2: modules:', modules.length, '| unik product_code:', byProductCode.size);
@@ -320,14 +337,26 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     const modulesListUrl = `${SOCX_SUPPLIERS_MODULES_LIST_PREFIX}${supplierId}`;
     logSync('Step 2b: GET', modulesListUrl);
     const modulesListResp = await axios.get(`${baseUrl}${modulesListUrl}`, { timeout: 30000, headers });
-    const suppliersModules = Array.isArray(modulesListResp.data) ? modulesListResp.data : [];
-    logSync('Step 2b: suppliers_modules:', suppliersModules.length);
+    let suppliersModules = Array.isArray(modulesListResp.data) ? modulesListResp.data : [];
+    if (selectedModuleIds != null && selectedModuleIds.length > 0) {
+      const idSet = new Set(selectedModuleIds);
+      suppliersModules = suppliersModules.filter((sm) => idSet.has(Number(sm.id)));
+      logSync('Step 2b: filter by suppliers_module_ids', selectedModuleIds, '→', suppliersModules.length, 'modul');
+      if (suppliersModules.length === 0) {
+        return res.status(400).json({ success: false, message: 'Modul yang dipilih tidak ditemukan di daftar modul SOCX' });
+      }
+    } else {
+      logSync('Step 2b: suppliers_modules:', suppliersModules.length, '(semua modul aktif)');
+    }
 
     // Step 2c: Hapus entry OTF_* yang tidak ada di request (cleanup sebelum sync)
     const requestedCodes = new Set(list.map((p) => String(p.product_code || '').trim().toUpperCase()).filter(Boolean));
+    const selectedIdSet = selectedModuleIds ? new Set(selectedModuleIds) : null;
     const toDelete = modules.filter((m) => {
       const pc = String(m?.product_code || '').trim().toUpperCase();
-      return pc.startsWith('OTF_') && !requestedCodes.has(pc);
+      if (!pc.startsWith('OTF_') || requestedCodes.has(pc)) return false;
+      if (selectedIdSet != null && !selectedIdSet.has(Number(m.suppliers_modules_id))) return false;
+      return true;
     });
     let deletedCount = 0;
     if (toDelete.length > 0) {
@@ -351,6 +380,41 @@ exports.syncIsimpleProductPrices = async (req, res) => {
       logSync('Step 2c: Berhasil hapus', deletedCount, 'dari', toDelete.length, 'entry');
     } else {
       logSync('Step 2c: Tidak ada entry OTF_* yang perlu dihapus');
+    }
+
+    // Step 2d: Jika modul tertentu dipilih, hapus entry product_code yang sama tapi modul lain (supaya hanya tersisa modul yang dipilih)
+    if (selectedIdSet != null) {
+      const toDeleteOtherModules = modules.filter((m) => {
+        const pc = String(m?.product_code || '').trim().toUpperCase();
+        return requestedCodes.has(pc) && !selectedIdSet.has(Number(m.suppliers_modules_id));
+      });
+      if (toDeleteOtherModules.length > 0) {
+        logSync('Step 2d: Hapus', toDeleteOtherModules.length, 'entry modul lain (bukan', selectedModuleIds, ')');
+        for (const entry of toDeleteOtherModules) {
+          const deleteUrl = `${baseUrl}/api/v1/products_has_suppliers_modules/${entry.id}`;
+          try {
+            logSync('  DELETE', entry.id, '|', entry.product_code, '| module', entry.suppliers_modules_id);
+            await axios.delete(deleteUrl, { timeout: 30000, headers });
+            deletedCount++;
+            const idx = modules.findIndex((m) => m.id === entry.id);
+            if (idx >= 0) modules.splice(idx, 1);
+          } catch (err) {
+            logSync('  ERROR delete', entry.id, ':', err.response?.status, err.response?.data?.message || err.message);
+          }
+        }
+        byProductCode.clear();
+        byProductCodeAndModule.clear();
+        for (const m of modules) {
+          const pc = m?.product_code ? String(m.product_code).trim() : '';
+          if (pc) {
+            const pcUpper = pc.toUpperCase();
+            if (!byProductCode.has(pcUpper)) byProductCode.set(pcUpper, m);
+            if (!byProductCodeAndModule.has(pcUpper)) byProductCodeAndModule.set(pcUpper, new Map());
+            byProductCodeAndModule.get(pcUpper).set(Number(m.suppliers_modules_id), m);
+          }
+        }
+        logSync('Step 2d: Selesai. Sisa modules:', modules.length, '| byProductCode:', byProductCode.size);
+      }
     }
 
     // Step 3: update suppliers_products price jika beda, atau create entry baru jika tidak ada
@@ -379,106 +443,86 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     let maxPrice = 0;
     const details = [];
 
-    logSync('Step 3: cek & update suppliers_products per promo (sorted by price)');
+    logSync('Step 3: per promo × per modul terpilih — update jika ada, create jika belum');
+    const activeSuppliersModules = suppliersModules.filter((sm) => sm.status === 1);
     for (const promo of sortedPromos) {
       const promoCode = promo?.product_code ? String(promo.product_code).trim() : '';
       const amount = Number(promo?.product_amount || 0);
       if (!promoCode) continue;
       const promoCodeUpper = promoCode.toUpperCase();
-      const moduleRow = byProductCode.get(promoCodeUpper);
-      if (!moduleRow) {
-        // Product code tidak ditemukan → perlu create entry baru di products_has_suppliers_modules
-        logSync('  ', promoCode, '→ not_found, cari suppliers_products...');
+      matched++;
+      if (amount > maxPrice) maxPrice = amount;
+
+      const existingByModule = byProductCodeAndModule.get(promoCodeUpper) || new Map();
+      let suppliersProductsId = null;
+      const anyExisting = existingByModule.values().next().value;
+      if (anyExisting) suppliersProductsId = anyExisting.suppliers_products_id;
+
+      if (!suppliersProductsId) {
         try {
-          // Step 3a: cari suppliers_products_id dari suppliers_products/list/{supplier_id}
           const suppliersProductsUrl = `${SOCX_SUPPLIERS_PRODUCTS_LIST_PREFIX}${supplierId}`;
-          logSync('    GET', suppliersProductsUrl);
           const suppliersProductsResp = await axios.get(`${baseUrl}${suppliersProductsUrl}`, { timeout: 30000, headers });
           const suppliersProducts = Array.isArray(suppliersProductsResp.data) ? suppliersProductsResp.data : [];
           let supplierProduct = suppliersProducts.find((sp) => String(sp.code || '').trim().toUpperCase() === promoCodeUpper);
-          let suppliersProductsId;
-          
           if (!supplierProduct) {
-            // Product tidak ditemukan → buat baru di suppliers_products
-            logSync('    suppliers_product tidak ditemukan untuk code:', promoCode, '→ membuat baru...');
-            const promoName = promo?.product_name || promoCode;
-            const createSupplierProductPayload = {
-              name: promoName,
+            logSync('  ', promoCode, '→ buat suppliers_product baru');
+            const createPayload = {
+              name: promo?.product_name || promoCode,
               code: promoCode,
-              parameters: JSON.stringify({ type: 'O4U' }), // Format: JSON string '{"type":"O4U"}'
+              parameters: JSON.stringify({ type: 'O4U' }),
               base_price: amount || 0,
               trx_per_day: 100,
               suppliers_id: supplierId,
               regex_custom_info: ''
             };
-            logSync('    POST', SOCX_SUPPLIERS_PRODUCTS_CREATE, '| payload:', JSON.stringify(createSupplierProductPayload));
-            const createResp = await axios.post(`${baseUrl}${SOCX_SUPPLIERS_PRODUCTS_CREATE}`, createSupplierProductPayload, { timeout: 30000, headers });
+            const createResp = await axios.post(`${baseUrl}${SOCX_SUPPLIERS_PRODUCTS_CREATE}`, createPayload, { timeout: 30000, headers });
             supplierProduct = createResp.data;
-            suppliersProductsId = supplierProduct?.id;
-            if (!suppliersProductsId) {
-              logSync('    Error: suppliers_product created tapi tidak ada id di response');
-              notFound++;
-              details.push({ product_code: promoCode, status: 'error_create_suppliers_product', error: 'No id in response' });
-              continue;
-            }
-            logSync('    suppliers_product dibuat | id:', suppliersProductsId, '| name:', promoName, '| base_price:', amount);
             createdSuppliersProducts++;
-          } else {
-            suppliersProductsId = supplierProduct.id;
-            logSync('    suppliers_product ditemukan | id:', suppliersProductsId, '| name:', supplierProduct.name, '| base_price:', supplierProduct.base_price);
           }
-
-          // Step 3b: create entry di products_has_suppliers_modules untuk setiap suppliers_modules
-          // Priority berdasarkan urutan harga (murah → mahal), increment kecil per module dalam promo yang sama
-          const promoPriority = nextPriority;
-          let moduleOffset = 0;
-          for (const sm of suppliersModules) {
-            if (sm.status !== 1) continue; // skip jika module tidak aktif
-            const finalPriority = promoPriority + moduleOffset;
-            const createPayload = {
-              products_id: socxProduct.id,
-              products_code: code,
-              product_code: promoCode,
-              suppliers_products_id: suppliersProductsId,
-              suppliers_modules_id: sm.id,
-              status: 1,
-              priority: finalPriority,
-              pending_limit: 20
-            };
-            logSync('    POST products_has_suppliers_modules | module:', sm.name, '| priority:', finalPriority, '| harga:', amount);
-            await axios.post(`${baseUrl}${SOCX_PRODUCTS_HAS_MODULES_CREATE}`, createPayload, { timeout: 30000, headers });
-            created++;
-            details.push({ product_code: promoCode, suppliers_products_id: suppliersProductsId, suppliers_modules_id: sm.id, status: 'created', priority: finalPriority });
-            moduleOffset++;
-          }
-          // Increment priority untuk promo berikutnya (setelah semua module promo ini selesai)
-          nextPriority += suppliersModules.filter(sm => sm.status === 1).length;
-          matched++;
-          if (amount > maxPrice) maxPrice = amount;
-          logSync('    created', suppliersModules.length, 'entries untuk', promoCode);
-        } catch (createErr) {
-          console.error('Error create products_has_suppliers_modules:', createErr.message);
+          suppliersProductsId = supplierProduct?.id;
+        } catch (err) {
+          logSync('  ', promoCode, '→ error get/create suppliers_product:', err.message);
           notFound++;
-          details.push({ product_code: promoCode, status: 'error_create', error: createErr.message });
-          logSync('    error create:', createErr.message);
+          details.push({ product_code: promoCode, status: 'error_suppliers_product', error: err.message });
+          continue;
         }
-        continue;
       }
-      matched++;
-      if (amount > maxPrice) maxPrice = amount;
 
-      const suppliersId = moduleRow.suppliers_products_id;
-      const currentBase = Number(moduleRow.base_price || 0);
-      if (suppliersId && amount > 0 && currentBase !== amount) {
-        logSync('  ', promoCode, '→ update suppliers_products id', suppliersId, '|', currentBase, '→', amount);
-        await axios.post(`${baseUrl}${SOCX_UPDATE_SUPPLIERS_PRICE_ENDPOINT}`, { id: suppliersId, price: amount }, { timeout: 30000, headers });
-        updatedSuppliers++;
-        details.push({ product_code: promoCode, suppliers_products_id: suppliersId, from: currentBase, to: amount, status: 'updated_suppliers' });
-      } else {
-        skippedSuppliers++;
-        details.push({ product_code: promoCode, suppliers_products_id: suppliersId, from: currentBase, to: amount, status: 'skipped_suppliers' });
-        logSync('  ', promoCode, '→ skip (sama atau invalid) | id:', suppliersId, '| base:', currentBase, '| amount:', amount);
+      let promoPriority = nextPriority;
+      for (const sm of activeSuppliersModules) {
+        const moduleId = Number(sm.id);
+        const existingRow = existingByModule.get(moduleId);
+        if (existingRow) {
+          const suppliersId = existingRow.suppliers_products_id;
+          const currentBase = Number(existingRow.base_price || 0);
+          if (suppliersId && amount > 0 && currentBase !== amount) {
+            logSync('  ', promoCode, '| module', sm.name, '→ update price', currentBase, '→', amount);
+            await axios.post(`${baseUrl}${SOCX_UPDATE_SUPPLIERS_PRICE_ENDPOINT}`, { id: suppliersId, price: amount }, { timeout: 30000, headers });
+            updatedSuppliers++;
+            details.push({ product_code: promoCode, suppliers_modules_id: moduleId, module_name: sm.name, from: currentBase, to: amount, status: 'updated_suppliers' });
+          } else {
+            skippedSuppliers++;
+            details.push({ product_code: promoCode, suppliers_modules_id: moduleId, module_name: sm.name, status: 'skipped_suppliers' });
+          }
+        } else {
+          const createPayload = {
+            products_id: socxProduct.id,
+            products_code: code,
+            product_code: promoCode,
+            suppliers_products_id: suppliersProductsId,
+            suppliers_modules_id: moduleId,
+            status: 1,
+            priority: promoPriority,
+            pending_limit: 20
+          };
+          logSync('  ', promoCode, '| module', sm.name, '→ create entry');
+          await axios.post(`${baseUrl}${SOCX_PRODUCTS_HAS_MODULES_CREATE}`, createPayload, { timeout: 30000, headers });
+          created++;
+          details.push({ product_code: promoCode, suppliers_modules_id: moduleId, module_name: sm.name, status: 'created' });
+          promoPriority++;
+        }
       }
+      nextPriority += activeSuppliersModules.length;
     }
     logSync('Step 3: matched:', matched, '| updated_suppliers:', updatedSuppliers, '| skipped:', skippedSuppliers, '| created:', created, '| created_suppliers_products:', createdSuppliersProducts, '| not_found:', notFound, '| max_price:', maxPrice);
 
@@ -522,6 +566,67 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     }
     console.error('Error syncIsimpleProductPrices:', msg);
     return res.status(status).json({ success: false, message: msg, error: msg, code: status === 401 ? 'SOCX_TOKEN_INVALID' : undefined });
+  }
+};
+
+/**
+ * GET list suppliers_modules untuk supplier tertentu (untuk dropdown Modul di Daftar Produk)
+ * GET /api/socx/suppliers-modules/list/:supplierId
+ * Response: array dari API suppliers_modules/list (id, name, uri, ...)
+ */
+exports.getSuppliersModulesList = async (req, res) => {
+  try {
+    const { supplierId } = req.params;
+    if (!supplierId) {
+      return res.status(400).json({ success: false, message: 'supplierId required', data: [] });
+    }
+    let baseUrl;
+    let token;
+    try {
+      const auth = await getSocxAuth(req);
+      baseUrl = auth.baseUrl;
+      token = auth.token;
+    } catch (authErr) {
+      console.error('getSuppliersModulesList: auth error', authErr.message);
+      return res.json({
+        success: true,
+        data: [],
+        message: 'SOCX URL atau Token belum diatur. Atur di Pengaturan (Settings) agar daftar modul terisi.'
+      });
+    }
+    const url = `${String(baseUrl).replace(/\/$/, '')}${SOCX_SUPPLIERS_MODULES_LIST_PREFIX}${supplierId}`;
+    let response;
+    try {
+      response = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      });
+    } catch (socxErr) {
+      console.error('getSuppliersModulesList: SOCX request failed', socxErr.message, socxErr.response?.status);
+      return res.json({
+        success: true,
+        data: [],
+        message: socxErr.response?.status === 401
+          ? 'SOCX token tidak valid atau kadaluarsa. Perbarui di Pengaturan.'
+          : 'Gagal memuat daftar modul dari SOCX. Cek URL dan koneksi.'
+      });
+    }
+    const body = response.data;
+    let raw = [];
+    if (Array.isArray(body)) raw = body;
+    else if (body && Array.isArray(body.data)) raw = body.data;
+    else if (body && Array.isArray(body.list)) raw = body.list;
+    const data = raw.map((m) => ({
+      id: m.id,
+      name: m.name || m.uri || `Modul ${m.id}`
+    }));
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error getSuppliersModulesList:', error.message);
+    res.json({ success: true, data: [], message: 'Gagal mengambil daftar modul' });
   }
 };
 
