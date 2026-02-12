@@ -191,18 +191,37 @@ exports.proxyDelete = async (req, res) => {
   }
 };
 
+/** Supplier ID SOCX: 35 = iSimple/Indosat, 51 = Tri (Rita / special_offer) */
+const SOCX_SUPPLIER_ID_ISIMPLE = 35;
+const SOCX_SUPPLIER_ID_TRI = Number(process.env.SOCX_SUPPLIER_ID_TRI || 51);
+
 /**
  * Apply/order promo ke SOCX (msisdn + product_code).
- * Body: { msisdn, product_code, product_name?, product_amount? }
+ * Body: { msisdn, product_code, product_name?, product_amount?, product_net_price?, offer_id?, provider? }
+ * - provider: 'tri' → format Tri (special_offer), suppliers_id 51, base_price = netPrice.
  */
 exports.applyPromo = async (req, res) => {
   try {
-    // NOTE: endpoint legacy (per promo) — tetap dipertahankan
-    const { msisdn, product_code, product_name, product_amount } = req.body || {};
-    if (!msisdn || !product_code) {
+    // Body bisa langsung di req.body (Express json) atau dibungkus req.body.body (beberapa client)
+    let body = req.body || {};
+    if (body && typeof body.body === 'object' && body.body !== null) {
+      body = body.body;
+    }
+    const { msisdn, product_code, product_name, product_amount, product_net_price, offer_id, provider } = body;
+    const isTri = String(provider || '').toLowerCase() === 'tri';
+
+    if (!product_code) {
+      const receivedKeys = body && typeof body === 'object' ? Object.keys(body).join(', ') : 'none';
       return res.status(400).json({
-        message: 'msisdn dan product_code wajib',
-        error: 'msisdn dan product_code wajib',
+        message: 'product_code wajib',
+        error: `product_code wajib. Received keys: ${receivedKeys}`,
+        success: false
+      });
+    }
+    if (!isTri && !msisdn) {
+      return res.status(400).json({
+        message: 'msisdn wajib untuk Isimple',
+        error: 'msisdn wajib untuk Isimple',
         success: false
       });
     }
@@ -210,20 +229,43 @@ exports.applyPromo = async (req, res) => {
     const { baseUrl, token } = await getSocxAuth(req);
 
     const url = `${baseUrl}${SOCX_ORDER_ENDPOINT}`;
-    // Payload sesuai format create suppliers_products
-    const payload = {
-      name: product_name || product_code,
-      code: product_code,
-      parameters: JSON.stringify({ type: 'O4U' }), // Format: JSON string '{"type":"O4U"}'
-      base_price: product_amount || 0,
-      trx_per_day: 100,
-      suppliers_id: 35, // iSimple supplier ID di SOCX
-      regex_custom_info: ''
-    };
-    // Tambahkan msisdn jika diperlukan untuk apply promo
-    if (msisdn) payload.msisdn = msisdn;
+    let payload;
 
-    console.log('[Apply Promo] Request to SOCX:', url);
+    if (isTri) {
+      // Tri (Rita): format seperti SOCX — name=offerShortDesc, code=registrationKey, base_price=netPrice, parameters=JSON special_offer
+      const netVal = product_net_price != null && product_net_price !== '' ? Number(product_net_price) : (product_amount != null ? Number(product_amount) : 0);
+      const parameters = {
+        type: 'special_offer',
+        offerId: offer_id != null && String(offer_id).trim() !== '' ? String(offer_id).trim() : String(product_code).trim(),
+        offerShortDesc: String(product_name || product_code).trim(),
+        productPrice: product_amount != null && product_amount !== '' ? String(product_amount) : '0',
+        registrationKey: String(product_code).trim(),
+        netPrice: String(netVal)
+      };
+      payload = {
+        name: product_name || product_code,
+        code: product_code,
+        parameters: JSON.stringify(parameters),
+        base_price: netVal,
+        trx_per_day: 100,
+        suppliers_id: SOCX_SUPPLIER_ID_TRI,
+        regex_custom_info: ''
+      };
+    } else {
+      // iSimple (Indosat): format O4U
+      payload = {
+        name: product_name || product_code,
+        code: product_code,
+        parameters: JSON.stringify({ type: 'O4U' }),
+        base_price: product_amount || 0,
+        trx_per_day: 100,
+        suppliers_id: SOCX_SUPPLIER_ID_ISIMPLE,
+        regex_custom_info: '',
+        msisdn
+      };
+    }
+
+    console.log('[Apply Promo] Request to SOCX:', url, isTri ? '(Tri)' : '(iSimple)');
     console.log('[Apply Promo] Payload:', JSON.stringify(payload, null, 2));
 
     const socxResponse = await axios.post(url, payload, {
