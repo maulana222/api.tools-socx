@@ -11,6 +11,7 @@ const SOCX_PRODUCTS_FILTER_PREFIX = '/api/v1/products/filter/';
 // products_has_suppliers_modules/product/{products_id}
 const SOCX_PRODUCTS_HAS_MODULES_PREFIX = '/api/v1/products_has_suppliers_modules/product/';
 const SOCX_PRODUCTS_HAS_MODULES_CREATE = '/api/v1/products_has_suppliers_modules';
+const SOCX_PRODUCTS_HAS_MODULES_PATCH_PREFIX = '/api/v1/products_has_suppliers_modules/';
 // update price endpoints
 const SOCX_UPDATE_SUPPLIERS_PRICE_ENDPOINT = '/api/v1/suppliers_products/update_price';
 const SOCX_UPDATE_PRODUCTS_PRICE_ENDPOINT = '/api/v1/products/update_price';
@@ -622,6 +623,53 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     }
     logSync('Step 3: matched:', matched, '| updated_suppliers:', updatedSuppliers, '| skipped:', skippedSuppliers, '| created:', created, '| created_suppliers_products:', createdSuppliersProducts, '| not_found:', notFound, '| max_price:', maxPrice);
 
+    // Step 3b: Urutkan ulang priority semua entry (OTF + non-OTF) berdasarkan harga: termurah = priority 1, termahal = terakhir.
+    // Entry non-OTF (mis. IFR2, LMP) ikut diurutkan; yang mahal dapat priority terakhir. Pakai PATCH per entry yang berubah.
+    let prioritiesUpdated = 0;
+    try {
+      const modulesRefetchResp = await axios.get(`${baseUrl}${SOCX_PRODUCTS_HAS_MODULES_PREFIX}${socxProduct.id}`, { timeout: 30000, headers });
+      const allEntries = parseModulesResponse(modulesRefetchResp.data);
+      if (allEntries.length > 0) {
+        const byPriceAsc = [...allEntries].sort((a, b) => {
+          const priceA = Number(a.base_price ?? 0);
+          const priceB = Number(b.base_price ?? 0);
+          return priceA - priceB;
+        });
+        logSync('Step 3b: Urutkan priority by price (murah → mahal), total entry:', byPriceAsc.length);
+        for (let i = 0; i < byPriceAsc.length; i++) {
+          const entry = byPriceAsc[i];
+          const desiredPriority = i + 1;
+          const currentPriority = entry.priority != null ? Number(entry.priority) : null;
+          if (currentPriority !== desiredPriority) {
+            const entryId = entry.id ?? entry.pk ?? entry.products_has_suppliers_modules_id;
+            if (entryId != null) {
+              const patchUrl = `${baseUrl}${SOCX_PRODUCTS_HAS_MODULES_PATCH_PREFIX}${entryId}`;
+              const patchBody = {
+                id: entryId,
+                products_id: entry.products_id,
+                products_code: entry.products_code ?? entry.product_code,
+                suppliers_products_id: entry.suppliers_products_id,
+                status: entry.status != null ? entry.status : 1,
+                priority: desiredPriority,
+                pending_limit: entry.pending_limit != null ? entry.pending_limit : 20,
+                suppliers_modules_id: getEntryModuleId(entry)
+              };
+              const patchResp = await axios.patch(patchUrl, patchBody, { timeout: 30000, headers, validateStatus: () => true });
+              if (patchResp.status >= 200 && patchResp.status < 300) {
+                prioritiesUpdated++;
+                logSync('  PATCH priority', entry.product_code || entryId, '→', desiredPriority);
+              } else {
+                logSync('  PATCH priority FAIL', entryId, '| status:', patchResp.status);
+              }
+            }
+          }
+        }
+        logSync('Step 3b: priorities_updated:', prioritiesUpdated);
+      }
+    } catch (err) {
+      logSync('Step 3b: Error reorder priority', err.message);
+    }
+
     // Step 4: update products price dengan harga terbesar
     const currentProductPrice = Number(socxProduct.price || 0);
     let productPriceUpdated = false;
@@ -634,7 +682,7 @@ exports.syncIsimpleProductPrices = async (req, res) => {
       logSync('Step 4: skip (sama atau max_price 0)');
     }
 
-    logSync('Selesai | deleted:', deletedCount, '| updated_suppliers:', updatedSuppliers, '| created:', created, '| product_price_updated:', productPriceUpdated);
+    logSync('Selesai | deleted:', deletedCount, '| updated_suppliers:', updatedSuppliers, '| created:', created, '| priorities_updated:', prioritiesUpdated, '| product_price_updated:', productPriceUpdated);
 
     return res.json({
       success: true,
@@ -648,6 +696,7 @@ exports.syncIsimpleProductPrices = async (req, res) => {
         skipped_suppliers: skippedSuppliers,
         created,
         created_suppliers_products: createdSuppliersProducts,
+        priorities_updated: prioritiesUpdated,
         max_price: maxPrice,
         product_price_updated: productPriceUpdated
       },
