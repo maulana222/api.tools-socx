@@ -94,6 +94,7 @@ class IsimpleNumber {
     return r?.affectedRows ?? 0;
   }
 
+  /** Satu query JOIN untuk ambil semua promo (hindari N+1 / batch loop). */
   static async getByProjectWithPromos(projectId) {
     const numbers = await db.query(
       'SELECT * FROM isimple_numbers WHERE project_id = ? ORDER BY COALESCE(last_checked_at, updated_at) DESC, created_at DESC',
@@ -102,38 +103,32 @@ class IsimpleNumber {
     const list = Array.isArray(numbers) ? numbers : [];
     if (list.length === 0) return list;
 
-    const ids = list.map((row) => row.id).filter((id) => id != null);
-    if (ids.length === 0) return list;
-
-    const BATCH_SIZE = 1000;
+    const columns = 'p.id, p.isimple_number_id, p.product_code, p.product_name, p.product_amount, p.product_type, p.product_type_title, p.product_commission, p.product_gb, p.product_days, p.is_selected, p.created_at';
+    const allPromos = await db.query(
+      `SELECT ${columns} FROM promo_products p
+       INNER JOIN isimple_numbers n ON n.id = p.isimple_number_id AND n.project_id = ?
+       ORDER BY p.isimple_number_id, p.id ASC`,
+      [projectId]
+    );
     const promosByNumberId = {};
-    const columns = 'id, isimple_number_id, product_code, product_name, product_amount, product_type, product_type_title, product_commission, product_gb, product_days, is_selected, created_at';
-    for (let i = 0; i < ids.length; i += BATCH_SIZE) {
-      const batch = ids.slice(i, i + BATCH_SIZE);
-      const placeholders = batch.map(() => '?').join(',');
-      const allPromos = await db.query(
-        `SELECT ${columns} FROM promo_products WHERE isimple_number_id IN (${placeholders}) ORDER BY isimple_number_id, id ASC`,
-        batch
-      );
-      const promoList = Array.isArray(allPromos) ? allPromos : [];
-      for (const p of promoList) {
-        const nid = p.isimple_number_id;
-        if (!promosByNumberId[nid]) promosByNumberId[nid] = [];
-        promosByNumberId[nid].push({
-          id: p.id,
-          isimple_number_id: p.isimple_number_id,
-          product_code: p.product_code,
-          product_name: p.product_name,
-          product_amount: p.product_amount,
-          product_type: p.product_type,
-          product_type_title: p.product_type_title,
-          product_commission: p.product_commission,
-          product_gb: p.product_gb,
-          product_days: p.product_days,
-          is_selected: p.is_selected,
-          created_at: p.created_at
-        });
-      }
+    const promoList = Array.isArray(allPromos) ? allPromos : [];
+    for (const p of promoList) {
+      const nid = p.isimple_number_id;
+      if (!promosByNumberId[nid]) promosByNumberId[nid] = [];
+      promosByNumberId[nid].push({
+        id: p.id,
+        isimple_number_id: p.isimple_number_id,
+        product_code: p.product_code,
+        product_name: p.product_name,
+        product_amount: p.product_amount,
+        product_type: p.product_type,
+        product_type_title: p.product_type_title,
+        product_commission: p.product_commission,
+        product_gb: p.product_gb,
+        product_days: p.product_days,
+        is_selected: p.is_selected,
+        created_at: p.created_at
+      });
     }
     for (const row of list) {
       row.promos = promosByNumberId[row.id] || [];

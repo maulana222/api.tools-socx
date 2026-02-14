@@ -197,14 +197,57 @@ class TriPromoProduct {
   }
 
   /**
-   * Hapus semua promo untuk satu tri_number lalu insert batch (untuk update hasil cek).
+   * Insert banyak promo sekaligus (hindari N+1). Satu INSERT dengan banyak VALUES.
+   * @param {Array<Object>} rows - Array objek dengan shape sama create(): triNumberId, productName, productCode, ...
+   */
+  static async createBatch(rows) {
+    if (!rows || rows.length === 0) return 0;
+    const cols = 'tri_number_id, product_name, product_code, product_amount, net_price, product_type, validity_days, parameter, raw_response, offer_id, offer_short_desc, registration_key, retailer_incentive, recommendation_name, offer_description, sequence_number, starred, banner_color, discount_value, best_deal';
+    const placeholders = rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const params = [];
+    for (const data of rows) {
+      const base = [
+        data.triNumberId,
+        data.productName ?? null,
+        data.productCode ?? '',
+        data.productAmount ?? null,
+        data.netPrice ?? null,
+        data.productType ?? null,
+        data.validityDays ?? null,
+        typeof data.parameter === 'string' ? data.parameter : (data.parameter ? JSON.stringify(data.parameter) : null),
+        data.rawResponse ? JSON.stringify(data.rawResponse) : null
+      ];
+      const extra = [
+        data.offerId ?? null,
+        data.offerShortDesc ?? null,
+        data.registrationKey ?? null,
+        data.retailerIncentive ?? null,
+        data.recommendationName ?? null,
+        data.offerDescription ?? null,
+        Number.isInteger(data.sequenceNumber) ? data.sequenceNumber : null,
+        data.starred === true ? 1 : data.starred === false ? 0 : null,
+        data.bannerColor ?? null,
+        data.discountValue ?? null,
+        data.bestDeal === true ? 1 : data.bestDeal === false ? 0 : null
+      ];
+      params.push(...base, ...extra);
+    }
+    await db.query(
+      `INSERT INTO tri_promo_products (${cols}) VALUES ${placeholders}`,
+      params
+    );
+    return rows.length;
+  }
+
+  /**
+   * Hapus semua promo untuk satu tri_number lalu insert batch (untuk update hasil cek). Satu DELETE + satu INSERT batch (bukan N+1).
    * Response SOCX Tri: { data: [ { offerId, offerShortDesc, productPrice, netPrice, registrationKey, validity, ... } ] }
    */
   static async replaceByTriNumberId(triNumberId, products) {
     await db.query('DELETE FROM tri_promo_products WHERE tri_number_id = ?', [triNumberId]);
     if (!products || products.length === 0) return 0;
 
-    let inserted = 0;
+    const rows = [];
     for (const p of products) {
       const {
         code,
@@ -226,35 +269,68 @@ class TriPromoProduct {
         discountValue,
         bestDeal
       } = this.normalizeTriOffer(p);
-      try {
-        await this.create({
-          triNumberId,
-          productName: name,
-          productCode: code,
-          productAmount: Number.isFinite(amount) ? amount : null,
-          netPrice: Number.isFinite(net) ? net : null,
-          productType: type,
-          validityDays: Number.isInteger(validityDays) ? validityDays : null,
-          parameter: param,
-          rawResponse: p,
-          offerId,
-          offerShortDesc,
-          registrationKey,
-          retailerIncentive: Number.isFinite(retailerIncentive) ? retailerIncentive : null,
-          recommendationName,
-          offerDescription,
-          sequenceNumber,
-          starred,
-          bannerColor,
-          discountValue,
-          bestDeal
-        });
-        inserted++;
-      } catch (err) {
-        if (err.code !== 'ER_DUP_ENTRY' && err.errno !== 1062) throw err;
-      }
+      rows.push({
+        triNumberId,
+        productName: name,
+        productCode: code,
+        productAmount: Number.isFinite(amount) ? amount : null,
+        netPrice: Number.isFinite(net) ? net : null,
+        productType: type,
+        validityDays: Number.isInteger(validityDays) ? validityDays : null,
+        parameter: param,
+        rawResponse: p,
+        offerId,
+        offerShortDesc,
+        registrationKey,
+        retailerIncentive: Number.isFinite(retailerIncentive) ? retailerIncentive : null,
+        recommendationName,
+        offerDescription,
+        sequenceNumber,
+        starred,
+        bannerColor,
+        discountValue,
+        bestDeal
+      });
     }
-    return inserted;
+    try {
+      return await this.createBatch(rows);
+    } catch (err) {
+      if (err.code === 'ER_BAD_FIELD_ERROR' || err.errno === 1054 || err.errno === 1136) {
+        const fallbackRows = rows.map((r) => ({
+          triNumberId: r.triNumberId,
+          productName: r.productName,
+          productCode: r.productCode,
+          productAmount: r.productAmount,
+          netPrice: r.netPrice,
+          productType: r.productType,
+          validityDays: r.validityDays,
+          parameter: r.parameter,
+          rawResponse: r.rawResponse
+        }));
+        return await this.createBatchFallback9(fallbackRows);
+      }
+      throw err;
+    }
+  }
+
+  /** Fallback batch insert dengan 9 kolom saja (jika DB belum punya kolom tambahan). */
+  static async createBatchFallback9(rows) {
+    if (!rows || rows.length === 0) return 0;
+    const cols = 'tri_number_id, product_name, product_code, product_amount, net_price, product_type, validity_days, parameter, raw_response';
+    const placeholders = rows.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const params = rows.flatMap((r) => [
+      r.triNumberId,
+      r.productName ?? null,
+      r.productCode ?? '',
+      r.productAmount ?? null,
+      r.netPrice ?? null,
+      r.productType ?? null,
+      r.validityDays ?? null,
+      typeof r.parameter === 'string' ? r.parameter : (r.parameter ? JSON.stringify(r.parameter) : null),
+      r.rawResponse ? JSON.stringify(r.rawResponse) : null
+    ]);
+    await db.query(`INSERT INTO tri_promo_products (${cols}) VALUES ${placeholders}`, params);
+    return rows.length;
   }
 
   static async deleteByTriNumberId(triNumberId) {

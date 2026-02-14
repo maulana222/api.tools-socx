@@ -127,7 +127,7 @@ const createIsimplePhone = async (req, res) => {
   }
 };
 
-// Batch create isimple phones (schema-safe: only phone_number)
+// Batch create isimple phones (schema-safe: only phone_number). Satu SELECT existing + satu INSERT batch + satu SELECT created (bukan N+1).
 const batchCreateIsimplePhones = async (req, res) => {
   try {
     const { numbers } = req.body;
@@ -136,31 +136,40 @@ const batchCreateIsimplePhones = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Numbers array is required' });
     }
 
-    const createdPhones = [];
-    const errors = [];
+    const normalized = numbers.map((raw) => (raw != null ? String(raw).trim() : '')).filter(Boolean);
+    if (normalized.length === 0) {
+      return res.status(201).json({ success: true, created: 0, data: [], errors: [] });
+    }
 
-    for (const raw of numbers) {
-      const phone_number = raw != null ? String(raw).trim() : '';
-      if (!phone_number) continue;
-      try {
-        const existing = await database.query('SELECT id FROM isimple_phones WHERE phone_number = ?', [phone_number]);
-        if (existing.length > 0) {
-          errors.push({ phone_number, message: 'Phone number already exists' });
-        } else {
-          const result = await database.query('INSERT INTO isimple_phones (phone_number) VALUES (?)', [phone_number]);
-          const newPhone = await database.query(
-            'SELECT id, phone_number, created_at FROM isimple_phones WHERE id = ?',
-            [result.insertId]
-          );
-          createdPhones.push({
-            id: newPhone[0].id,
-            number: newPhone[0].phone_number,
-            created_at: newPhone[0].created_at
-          });
-        }
-      } catch (err) {
-        errors.push({ phone_number, message: err.message });
-      }
+    const uniqueToCheck = [...new Set(normalized)];
+    const placeholders = uniqueToCheck.map(() => '?').join(',');
+    const existing = await database.query(
+      `SELECT phone_number FROM isimple_phones WHERE phone_number IN (${placeholders})`,
+      uniqueToCheck
+    );
+    const existingSet = new Set((Array.isArray(existing) ? existing : []).map((r) => (r.phone_number || '').trim()));
+    const toInsert = uniqueToCheck.filter((n) => !existingSet.has(n));
+    const errors = uniqueToCheck.filter((n) => existingSet.has(n)).map((phone_number) => ({ phone_number, message: 'Phone number already exists' }));
+
+    let createdPhones = [];
+    if (toInsert.length > 0) {
+      const insertPlaceholders = toInsert.map(() => '(?)').join(', ');
+      const insertParams = toInsert;
+      await database.query(
+        `INSERT INTO isimple_phones (phone_number) VALUES ${insertPlaceholders}`,
+        insertParams
+      );
+      const selectPlaceholders = toInsert.map(() => '?').join(',');
+      const created = await database.query(
+        `SELECT id, phone_number, created_at FROM isimple_phones WHERE phone_number IN (${selectPlaceholders}) ORDER BY id ASC`,
+        toInsert
+      );
+      const list = Array.isArray(created) ? created : [];
+      createdPhones = list.map((r) => ({
+        id: r.id,
+        number: r.phone_number,
+        created_at: r.created_at
+      }));
     }
 
     res.status(201).json({
