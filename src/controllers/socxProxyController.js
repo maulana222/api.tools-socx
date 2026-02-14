@@ -311,6 +311,26 @@ exports.applyPromo = async (req, res) => {
 const isDev = process.env.NODE_ENV !== 'production';
 const logSync = (...args) => { if (isDev) console.log('[SOCX Sync]', ...args); };
 
+/** Ambil array modules dari response SOCX GET products_has_suppliers_modules/product/{id} (format bisa bervariasi). */
+function parseModulesResponse(data) {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.data)) return data.data;
+  if (data.data && Array.isArray(data.data.modules)) return data.data.modules;
+  if (data.data && Array.isArray(data.data.items)) return data.data.items;
+  if (data.modules && Array.isArray(data.modules)) return data.modules;
+  if (data.items && Array.isArray(data.items)) return data.items;
+  return [];
+}
+
+/** Ambil suppliers_modules_id dari satu entry (SOCX bisa pakai suppliers_modules_id atau suppliers_module_id). */
+function getEntryModuleId(entry) {
+  if (entry == null) return undefined;
+  const id = entry.suppliers_modules_id ?? entry.suppliers_module_id ?? entry.supplier_modules_id;
+  const n = Number(id);
+  return Number.isNaN(n) ? undefined : n;
+}
+
 function parseSelectedModuleIds(suppliers_module_id, suppliers_module_ids) {
   const arr = Array.isArray(suppliers_module_ids) ? suppliers_module_ids : [];
   const ids = arr.map((id) => Number(id)).filter((n) => !Number.isNaN(n));
@@ -324,9 +344,15 @@ function parseSelectedModuleIds(suppliers_module_id, suppliers_module_ids) {
 
 exports.syncIsimpleProductPrices = async (req, res) => {
   try {
-    const { socx_code, promos, providers_id, categories_id, suppliers_id, suppliers_module_id, suppliers_module_ids } = req.body || {};
+    let body = req.body || {};
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch { body = {}; }
+    }
+    if (body && typeof body.body === 'object' && body.body !== null) body = body.body;
+    const { socx_code, promos, providers_id, categories_id, suppliers_id, suppliers_module_id, suppliers_module_ids } = body;
     const code = socx_code != null ? String(socx_code).trim() : '';
     const list = Array.isArray(promos) ? promos : [];
+    logSync('Request body: socx_code:', code, '| promos:', list.length, '| suppliers_module_ids:', suppliers_module_ids, '| suppliers_module_id:', suppliers_module_id);
     // Default: providers_id = 2 (Indosat), categories_id = 2 (data) — sesuai contoh dari SOCX
     const providerId = providers_id != null ? Number(providers_id) : 2;
     const categoryId = categories_id != null ? Number(categories_id) : 2;
@@ -362,19 +388,24 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     const modulesUrl = `${SOCX_PRODUCTS_HAS_MODULES_PREFIX}${socxProduct.id}`;
     logSync('Step 2: GET', modulesUrl);
     const modulesResp = await axios.get(`${baseUrl}${modulesUrl}`, { timeout: 30000, headers });
-    const modules = Array.isArray(modulesResp.data) ? modulesResp.data : [];
+    const modules = parseModulesResponse(modulesResp.data);
+    if (isDev && modules.length > 0) {
+      const first = modules[0];
+      logSync('Step 2: sample entry keys:', Object.keys(first || {}).join(', '));
+    }
     const byProductCode = new Map(); // product_code_upper -> first row (backward compat)
-    const byProductCodeAndModule = new Map(); // product_code_upper -> Map(suppliers_modules_id -> row)
+    const byProductCodeAndModule = new Map(); // product_code_upper -> Map(moduleId -> row)
     for (const m of modules) {
       const pc = m?.product_code ? String(m.product_code).trim() : '';
+      const moduleId = getEntryModuleId(m);
       if (pc) {
         const pcUpper = pc.toUpperCase();
         if (!byProductCode.has(pcUpper)) byProductCode.set(pcUpper, m);
         if (!byProductCodeAndModule.has(pcUpper)) byProductCodeAndModule.set(pcUpper, new Map());
-        byProductCodeAndModule.get(pcUpper).set(Number(m.suppliers_modules_id), m);
+        if (moduleId != null) byProductCodeAndModule.get(pcUpper).set(moduleId, m);
       }
     }
-    logSync('Step 2: modules:', modules.length, '| unik product_code:', byProductCode.size);
+    logSync('Step 2: modules:', modules.length, '| unik product_code:', byProductCode.size, '| selectedModuleIds:', selectedModuleIds);
 
     // Step 2b: ambil list suppliers_modules untuk supplier ini (untuk create entry baru)
     const modulesListUrl = `${SOCX_SUPPLIERS_MODULES_LIST_PREFIX}${supplierId}`;
@@ -395,29 +426,32 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     // Step 2c: Hapus entry OTF_* yang tidak ada di request (cleanup sebelum sync)
     const requestedCodes = new Set(list.map((p) => String(p.product_code || '').trim().toUpperCase()).filter(Boolean));
     const selectedIdSet = selectedModuleIds ? new Set(selectedModuleIds) : null;
+    logSync('Step 2c/2d: requestedCodes:', [...requestedCodes], '| selectedIdSet:', selectedIdSet ? [...selectedIdSet] : 'null (semua modul)');
     const toDelete = modules.filter((m) => {
       const pc = String(m?.product_code || '').trim().toUpperCase();
       if (!pc.startsWith('OTF_') || requestedCodes.has(pc)) return false;
-      if (selectedIdSet != null && !selectedIdSet.has(Number(m.suppliers_modules_id))) return false;
+      if (selectedIdSet != null && !selectedIdSet.has(getEntryModuleId(m))) return false;
       return true;
     });
     let deletedCount = 0;
     if (toDelete.length > 0) {
       logSync('Step 2c: Hapus', toDelete.length, 'entry OTF_* yang tidak ada di request');
       for (const entry of toDelete) {
-        const deleteUrl = `${baseUrl}/api/v1/products_has_suppliers_modules/${entry.id}`;
+        const entryId = entry.id ?? entry.pk ?? entry.products_has_suppliers_modules_id;
+        if (entryId == null) continue;
+        const deleteUrl = `${baseUrl}/api/v1/products_has_suppliers_modules/${entryId}`;
         try {
           logSync('  DELETE', entry.id, '|', entry.product_code);
           await axios.delete(deleteUrl, { timeout: 30000, headers });
           deletedCount++;
           // Hapus juga dari modules array agar tidak diproses di Step 3
-          const idx = modules.findIndex((m) => m.id === entry.id);
+          const idx = modules.findIndex((m) => (m.id === entryId) || (m.id === entry.id));
           if (idx >= 0) modules.splice(idx, 1);
           // Update byProductCode juga (gunakan uppercase untuk konsisten)
           const pcUpper = entry.product_code ? String(entry.product_code).trim().toUpperCase() : '';
           if (pcUpper) byProductCode.delete(pcUpper);
         } catch (err) {
-          logSync('  ERROR delete', entry.id, ':', err.response?.status, err.response?.data?.message || err.message);
+          logSync('  ERROR delete', entryId, ':', err.response?.status, err.response?.data?.message || err.message);
         }
       }
       logSync('Step 2c: Berhasil hapus', deletedCount, 'dari', toDelete.length, 'entry');
@@ -425,35 +459,52 @@ exports.syncIsimpleProductPrices = async (req, res) => {
       logSync('Step 2c: Tidak ada entry OTF_* yang perlu dihapus');
     }
 
-    // Step 2d: Jika modul tertentu dipilih, hapus entry product_code yang sama tapi modul lain (supaya hanya tersisa modul yang dipilih)
+    // Step 2d: Jika frontend mengirim hanya 1 (atau beberapa) modul terpilih: hapus SEMUA entry produk ini
+    // yang modulnya BUKAN yang dipilih, supaya di SOCX hanya tersisa modul yang dipilih. Tidak peduli
+    // product_code ada di request atau tidak — yang penting: entry dengan suppliers_modules_id di luar
+    // selectedIdSet dihapus. Contoh: request suppliers_module_ids: [40] → hapus entry id 8846 (modul 42).
     if (selectedIdSet != null) {
       const toDeleteOtherModules = modules.filter((m) => {
-        const pc = String(m?.product_code || '').trim().toUpperCase();
-        return requestedCodes.has(pc) && !selectedIdSet.has(Number(m.suppliers_modules_id));
+        const mid = getEntryModuleId(m);
+        const shouldDel = mid != null && !selectedIdSet.has(mid);
+        if (isDev) logSync('  2d check: id=', m.id, '| product_code:', m.product_code, '| moduleId:', mid, '| in selected:', selectedIdSet.has(mid), '→ delete:', shouldDel);
+        return shouldDel;
       });
+      logSync('Step 2d: toDeleteOtherModules:', toDeleteOtherModules.length, '| selectedModuleIds:', selectedModuleIds);
       if (toDeleteOtherModules.length > 0) {
-        logSync('Step 2d: Hapus', toDeleteOtherModules.length, 'entry modul lain (bukan', selectedModuleIds, ')');
+        logSync('Step 2d: Hapus', toDeleteOtherModules.length, 'entry kode sama di modul lain (bukan', selectedModuleIds, ')');
         for (const entry of toDeleteOtherModules) {
-          const deleteUrl = `${baseUrl}/api/v1/products_has_suppliers_modules/${entry.id}`;
+          const entryId = entry.id ?? entry.pk ?? entry.products_has_suppliers_modules_id;
+          if (entryId == null) {
+            logSync('  SKIP delete: entry tanpa id', JSON.stringify(Object.keys(entry)));
+            continue;
+          }
+          const deleteUrl = `${baseUrl}/api/v1/products_has_suppliers_modules/${entryId}`;
           try {
-            logSync('  DELETE', entry.id, '|', entry.product_code, '| module', entry.suppliers_modules_id);
-            await axios.delete(deleteUrl, { timeout: 30000, headers });
-            deletedCount++;
-            const idx = modules.findIndex((m) => m.id === entry.id);
+            logSync('  DELETE', deleteUrl);
+            const delResp = await axios.delete(deleteUrl, { timeout: 30000, headers, validateStatus: () => true });
+            if (delResp.status >= 200 && delResp.status < 300) {
+              deletedCount++;
+              logSync('  OK delete id:', entryId, '| status:', delResp.status);
+            } else {
+              logSync('  FAIL delete id:', entryId, '| status:', delResp.status, '| data:', JSON.stringify(delResp.data));
+            }
+            const idx = modules.findIndex((m) => (m.id === entryId) || (m.id === entry.id) || (m.pk === entryId));
             if (idx >= 0) modules.splice(idx, 1);
           } catch (err) {
-            logSync('  ERROR delete', entry.id, ':', err.response?.status, err.response?.data?.message || err.message);
+            logSync('  ERROR delete', entryId, ':', err.response?.status, err.response?.data || err.message);
           }
         }
         byProductCode.clear();
         byProductCodeAndModule.clear();
         for (const m of modules) {
           const pc = m?.product_code ? String(m.product_code).trim() : '';
-          if (pc) {
+          const moduleId = getEntryModuleId(m);
+          if (pc && moduleId != null) {
             const pcUpper = pc.toUpperCase();
             if (!byProductCode.has(pcUpper)) byProductCode.set(pcUpper, m);
             if (!byProductCodeAndModule.has(pcUpper)) byProductCodeAndModule.set(pcUpper, new Map());
-            byProductCodeAndModule.get(pcUpper).set(Number(m.suppliers_modules_id), m);
+            byProductCodeAndModule.get(pcUpper).set(moduleId, m);
           }
         }
         logSync('Step 2d: Selesai. Sisa modules:', modules.length, '| byProductCode:', byProductCode.size);

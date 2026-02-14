@@ -76,6 +76,58 @@ class PromoProduct {
     return r?.affectedRows ?? 0;
   }
 
+  /**
+   * Merge promo hasil cek: tambah yang baru, update yang sudah ada (by product_code per isimple_number_id).
+   * Dipakai saat "Mulai Cek Promo" diklik lagi: hanya update/tambah, tidak hapus semua.
+   * ON DUPLICATE KEY UPDATE memakai UNIQUE (isimple_number_id, product_code). is_selected tidak di-overwrite agar pilihan user tetap.
+   */
+  static async upsertBatch(isimpleNumberId, products) {
+    if (!products || products.length === 0) return 0;
+
+    const cols = '(isimple_number_id, product_name, product_code, product_amount, product_type, product_type_title, product_commission, product_gb, product_days, is_selected)';
+    const placeholders = products.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+    const params = products.flatMap(p => [
+      isimpleNumberId,
+      p.productName || (p.name ? `Product ${p.name}` : 'Unknown Product'),
+      p.productCode || (p.dnmcode ? `Code ${p.dnmcode}` : 'unknown'),
+      p.productAmount || (p.amount || 0),
+      p.productType || (p.type || 'unknown'),
+      p.productTypeTitle || (p.typetitle || ''),
+      p.productCommission || (p.commision || 0),
+      p.productGb || (p.product_gb || 0),
+      p.productDays || (p.product_days || 0),
+      p.is_selected || false
+    ]);
+
+    const updateClause = [
+      'product_name = VALUES(product_name)',
+      'product_amount = VALUES(product_amount)',
+      'product_type = VALUES(product_type)',
+      'product_type_title = VALUES(product_type_title)',
+      'product_commission = VALUES(product_commission)',
+      'product_gb = VALUES(product_gb)',
+      'product_days = VALUES(product_days)'
+      // is_selected tidak di-update agar pilihan user (is_selected) tetap
+    ].join(', ');
+
+    const result = await db.query(
+      `INSERT INTO promo_products ${cols} VALUES ${placeholders} ON DUPLICATE KEY UPDATE ${updateClause}`,
+      params
+    );
+    const r = Array.isArray(result) ? result[0] : result;
+    return r?.affectedRows ?? 0;
+  }
+
+  /** Jumlah baris promo_products untuk satu isimple_number_id (setelah merge, untuk update packet_count). */
+  static async countByIsimpleNumberId(isimpleNumberId) {
+    const rows = await db.query(
+      'SELECT COUNT(*) AS cnt FROM promo_products WHERE isimple_number_id = ?',
+      [isimpleNumberId]
+    );
+    const r = Array.isArray(rows) && rows.length ? rows[0] : { cnt: 0 };
+    return Number(r.cnt) || 0;
+  }
+
   static async updateSelected(id, isSelected) {
     const result = await db.query(
       'UPDATE promo_products SET is_selected = ? WHERE id = ?',

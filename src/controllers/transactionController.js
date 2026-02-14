@@ -39,10 +39,12 @@ exports.getTransactions = async (req, res) => {
       timeout: 15000 // 15 seconds timeout
     });
 
-    // Get all transactions from page 1
     let transactions = Array.isArray(response.data) ? response.data : [];
-    
-    // Return all data - pagination will be done on frontend
+    const maxItems = Math.min(Number(req.query.limit) || 200, 500);
+    if (transactions.length > maxItems) {
+      transactions = transactions.slice(0, maxItems);
+    }
+
     res.json({
       success: true,
       data: transactions,
@@ -82,8 +84,6 @@ exports.getSuppliers = async (req, res) => {
     // Get base URL from settings or default
     const baseUrlSetting = await Settings.getByKey(userId, 'socx_base_url');
     const baseUrl = baseUrlSetting?.value || 'https://indotechapi.socx.app';
-
-    console.log(`Fetching suppliers from SOCX API: ${baseUrl}/api/v1/suppliers`);
 
     // Fetch suppliers from SOCX API
     const response = await axios.get(`${baseUrl}/api/v1/suppliers`, {

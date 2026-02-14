@@ -60,7 +60,6 @@ async function processOneIsimpleNumber(row, baseUrl, token, taskPayload, now) {
         }
       });
       const list = parsePromoList(response);
-      await PromoProduct.deleteByIsimpleNumberId(isimpleNumberId);
       if (list.length > 0) {
         const products = list.map(p => ({
           productName: p.name,
@@ -72,9 +71,10 @@ async function processOneIsimpleNumber(row, baseUrl, token, taskPayload, now) {
           productGb: p.gb ?? p.product_gb ?? 0,
           productDays: p.days ?? p.product_days ?? 0
         }));
-        await PromoProduct.createBatch(isimpleNumberId, products);
+        await PromoProduct.upsertBatch(isimpleNumberId, products);
       }
-      await IsimpleNumber.updateStatus(isimpleNumberId, 'processed', list.length, now);
+      const packetCount = await PromoProduct.countByIsimpleNumberId(isimpleNumberId);
+      await IsimpleNumber.updateStatus(isimpleNumberId, 'processed', packetCount, now);
       return;
     } catch (err) {
       lastError = err;
@@ -86,7 +86,6 @@ async function processOneIsimpleNumber(row, baseUrl, token, taskPayload, now) {
       }
       console.error('[SOCX] Error cek promo', msisdn, '|', err.message);
       try {
-        await PromoProduct.deleteByIsimpleNumberId(isimpleNumberId);
         await IsimpleNumber.updateStatus(isimpleNumberId, 'failed', 0, now);
       } catch (cleanupErr) {
         if (isDeadlockError(cleanupErr)) {
@@ -104,21 +103,78 @@ async function processOneIsimpleNumber(row, baseUrl, token, taskPayload, now) {
 }
 
 /**
- * Ambil daftar nomor dari isimple_phones (untuk diproses satu per satu).
- * Pakai getOrCreate: jika nomor sudah ada di isimple_numbers maka pakai row itu (update nanti), bukan tambah duplikat.
+ * Ambil daftar nomor dari isimple_phones saja (tanpa menyalin ke isimple_numbers).
+ * Dipakai untuk alur: cek nomor ke SOCX dulu, baru tambah satu per satu ke isimple_numbers.
  */
-async function getNumbersFromIsimplePhones(projectId = 1) {
+async function getPhoneListFromIsimplePhones() {
   const phones = await db.query('SELECT id, phone_number FROM isimple_phones ORDER BY id ASC');
   const list = Array.isArray(phones) ? phones : [];
-  const numbers = [];
-  for (const p of list) {
-    const num = p.phone_number || p.phoneNumber;
-    if (num) {
-      const row = await IsimpleNumber.getOrCreate(projectId, num);
-      numbers.push(row);
+  return list
+    .map((p) => p.phone_number || p.phoneNumber)
+    .filter(Boolean);
+}
+
+/**
+ * Proses satu nomor dari isimple_phones: cek ke SOCX dulu, lalu getOrCreate isimple_numbers dan simpan hasil.
+ * Jadi isimple_numbers hanya diisi setelah nomor dicek, bukan disalin semua dulu.
+ */
+async function processOnePhoneFromIsimplePhones(phoneNumber, projectId, baseUrl, token, taskPayload, now) {
+  const url = `${baseUrl}/api/v1/suppliers_modules/task`;
+  const body = { ...taskPayload, payload: { msisdn: phoneNumber } };
+  let lastError;
+  for (let attempt = 1; attempt <= DEADLOCK_RETRY_MAX; attempt++) {
+    try {
+      const response = await axios.post(url, body, {
+        timeout: 30000,
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const list = parsePromoList(response);
+      const row = await IsimpleNumber.getOrCreate(projectId, phoneNumber);
+      const isimpleNumberId = row.id;
+      if (list.length > 0) {
+        const products = list.map(p => ({
+          productName: p.name,
+          productCode: p.dnmcode || phoneNumber,
+          productAmount: p.amount ?? 0,
+          productType: p.type,
+          productTypeTitle: p.typetitle ?? p.name,
+          productCommission: p.commision ?? 0,
+          productGb: p.gb ?? p.product_gb ?? 0,
+          productDays: p.days ?? p.product_days ?? 0
+        }));
+        await PromoProduct.upsertBatch(isimpleNumberId, products);
+      }
+      const packetCount = await PromoProduct.countByIsimpleNumberId(isimpleNumberId);
+      await IsimpleNumber.updateStatus(isimpleNumberId, 'processed', packetCount, now);
+      return;
+    } catch (err) {
+      lastError = err;
+      if (attempt < DEADLOCK_RETRY_MAX && isDeadlockError(err)) {
+        const delay = DEADLOCK_RETRY_DELAY_MS + Math.floor(Math.random() * 100);
+        console.warn('[SOCX] Deadlock cek promo', phoneNumber, '| retry', attempt, '/', DEADLOCK_RETRY_MAX);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      console.error('[SOCX] Error cek promo', phoneNumber, '|', err.message);
+      try {
+        const row = await IsimpleNumber.getOrCreate(projectId, phoneNumber);
+        await IsimpleNumber.updateStatus(row.id, 'failed', 0, now);
+      } catch (cleanupErr) {
+        if (isDeadlockError(cleanupErr)) {
+          console.warn('[SOCX] Deadlock saat update status failed untuk', phoneNumber);
+        } else {
+          console.error('[SOCX] Cleanup error untuk', phoneNumber, '|', cleanupErr.message);
+        }
+      }
+      return;
     }
   }
-  return numbers;
+  if (lastError) {
+    console.error('[SOCX] Error cek promo setelah retry', phoneNumber, '|', lastError.message);
+  }
 }
 
 /**
@@ -163,23 +219,24 @@ const checkAllPromoByProject = async (req, res) => {
     progressCheckAll.currentNumber = null;
     progressCheckAll.currentIndex = 0;
 
-    // Sumber nomor: isimple_phones (lalu disinkron ke isimple_numbers untuk simpan hasil)
-    let numbers = await getNumbersFromIsimplePhones(projectId);
-    if (!numbers || numbers.length === 0) {
-      // Fallback: nomor dari isimple_numbers per project
-      numbers = await IsimpleNumber.getByProject(projectId);
-    }
-    if (!numbers || numbers.length === 0) {
-      progressCheckAll.status = 'idle';
-      return res.status(200).json({
-        success: true,
-        message: 'Tidak ada nomor. Isi tabel isimple_phones (nomor telepon) atau tambah nomor di project lewat "Tambah Produk".',
-        total: 0,
-        processed: 0
-      });
+    // Sumber nomor: isimple_phones. Alur: cek nomor ke SOCX dulu, baru tambah satu per satu ke isimple_numbers.
+    let phoneList = await getPhoneListFromIsimplePhones();
+    let numbersFromProject = [];
+    if (!phoneList || phoneList.length === 0) {
+      // Fallback: nomor yang sudah ada di isimple_numbers (project ini) — proses seperti biasa (row sudah ada).
+      numbersFromProject = await IsimpleNumber.getByProject(projectId);
+      if (!numbersFromProject || numbersFromProject.length === 0) {
+        progressCheckAll.status = 'idle';
+        return res.status(200).json({
+          success: true,
+          message: 'Tidak ada nomor. Isi tabel isimple_phones (Kelola nomor sample) atau tambah nomor di project lewat "Tambah Produk".',
+          total: 0,
+          processed: 0
+        });
+      }
     }
 
-    const total = numbers.length;
+    const total = phoneList.length > 0 ? phoneList.length : numbersFromProject.length;
     shouldStopCheckAll = false;
     progressCheckAll.total = total;
     progressCheckAll.processed = 0;
@@ -200,26 +257,53 @@ const checkAllPromoByProject = async (req, res) => {
       const chunkSize = Math.max(1, ISIMPLE_PROMO_CONCURRENCY);
 
       try {
-        for (let start = 0; start < numbers.length; start += chunkSize) {
-          if (shouldStopCheckAll) {
-            console.log('[SOCX] Proses dihentikan oleh user.');
-            progressCheckAll.status = 'stopped';
-            break;
+        if (phoneList.length > 0) {
+          // Alur baru: dari isimple_phones → cek SOCX dulu → baru getOrCreate isimple_numbers dan simpan hasil.
+          for (let start = 0; start < phoneList.length; start += chunkSize) {
+            if (shouldStopCheckAll) {
+              console.log('[SOCX] Proses dihentikan oleh user.');
+              progressCheckAll.status = 'stopped';
+              break;
+            }
+            const chunk = phoneList.slice(start, start + chunkSize);
+            console.log('[SOCX] Batch', Math.floor(start / chunkSize) + 1, '| nomor', start + 1, '-', start + chunk.length, '/', total);
+
+            await Promise.all(
+              chunk.map(phoneNumber => processOnePhoneFromIsimplePhones(phoneNumber, projectId, baseUrl, token, taskPayload, now))
+            );
+
+            processed += chunk.length;
+            progressCheckAll.processed = processed;
+            progressCheckAll.currentIndex = start + chunk.length;
+            progressCheckAll.currentNumber = chunk[chunk.length - 1] ?? null;
+
+            if (start + chunkSize < phoneList.length && ISIMPLE_PROMO_CHUNK_DELAY_MS > 0) {
+              await new Promise(r => setTimeout(r, ISIMPLE_PROMO_CHUNK_DELAY_MS));
+            }
           }
-          const chunk = numbers.slice(start, start + chunkSize);
-          console.log('[SOCX] Batch', Math.floor(start / chunkSize) + 1, '| nomor', start + 1, '-', start + chunk.length, '/', total);
+        } else {
+          // Fallback: proses row isimple_numbers yang sudah ada (per project).
+          for (let start = 0; start < numbersFromProject.length; start += chunkSize) {
+            if (shouldStopCheckAll) {
+              console.log('[SOCX] Proses dihentikan oleh user.');
+              progressCheckAll.status = 'stopped';
+              break;
+            }
+            const chunk = numbersFromProject.slice(start, start + chunkSize);
+            console.log('[SOCX] Batch', Math.floor(start / chunkSize) + 1, '| nomor', start + 1, '-', start + chunk.length, '/', total);
 
-          await Promise.all(
-            chunk.map(row => processOneIsimpleNumber(row, baseUrl, token, taskPayload, now))
-          );
+            await Promise.all(
+              chunk.map(row => processOneIsimpleNumber(row, baseUrl, token, taskPayload, now))
+            );
 
-          processed += chunk.length;
-          progressCheckAll.processed = processed;
-          progressCheckAll.currentIndex = start + chunk.length;
-          progressCheckAll.currentNumber = chunk[chunk.length - 1]?.number ?? null;
+            processed += chunk.length;
+            progressCheckAll.processed = processed;
+            progressCheckAll.currentIndex = start + chunk.length;
+            progressCheckAll.currentNumber = chunk[chunk.length - 1]?.number ?? null;
 
-          if (start + chunkSize < numbers.length && ISIMPLE_PROMO_CHUNK_DELAY_MS > 0) {
-            await new Promise(r => setTimeout(r, ISIMPLE_PROMO_CHUNK_DELAY_MS));
+            if (start + chunkSize < numbersFromProject.length && ISIMPLE_PROMO_CHUNK_DELAY_MS > 0) {
+              await new Promise(r => setTimeout(r, ISIMPLE_PROMO_CHUNK_DELAY_MS));
+            }
           }
         }
 
@@ -259,8 +343,8 @@ const stopCheck = (req, res) => {
 
 /**
  * Entry point: selalu delegasi ke checkAllPromoByProject.
- * checkAllPromoByProject mengambil nomor dari isimple_phones (fallback isimple_numbers), request SOCX per batch paralel (ISIMPLE_PROMO_CONCURRENCY).
- * Setiap nomor: data yang sudah ada di-update (hapus promo lama lalu simpan hasil terbaru), bukan ditambah duplikat.
+ * checkAllPromoByProject: sumber nomor dari isimple_phones. Alur: cek nomor ke SOCX dulu, baru getOrCreate isimple_numbers dan simpan hasil (tidak salin semua isimple_phones ke isimple_numbers dulu).
+ * Fallback jika isimple_phones kosong: pakai nomor yang sudah ada di isimple_numbers per project.
  */
 const checkAllPromo = async (req, res) => checkAllPromoByProject(req, res);
 
