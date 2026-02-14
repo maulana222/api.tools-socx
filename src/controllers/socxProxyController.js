@@ -626,9 +626,10 @@ exports.syncIsimpleProductPrices = async (req, res) => {
     // Step 3b: Urutkan ulang priority semua entry (OTF + non-OTF) berdasarkan harga: termurah = priority 1, termahal = terakhir.
     // Entry non-OTF (mis. IFR2, LMP) ikut diurutkan; yang mahal dapat priority terakhir. Pakai PATCH per entry yang berubah.
     let prioritiesUpdated = 0;
+    let allEntries = [];
     try {
       const modulesRefetchResp = await axios.get(`${baseUrl}${SOCX_PRODUCTS_HAS_MODULES_PREFIX}${socxProduct.id}`, { timeout: 30000, headers });
-      const allEntries = parseModulesResponse(modulesRefetchResp.data);
+      allEntries = parseModulesResponse(modulesRefetchResp.data);
       if (allEntries.length > 0) {
         const byPriceAsc = [...allEntries].sort((a, b) => {
           const priceA = Number(a.base_price ?? 0);
@@ -670,7 +671,19 @@ exports.syncIsimpleProductPrices = async (req, res) => {
       logSync('Step 3b: Error reorder priority', err.message);
     }
 
-    // Step 4: update products price dengan harga terbesar
+    // Hitung ulang maxPrice: harga tertinggi dari OTF (dari list) + entry non-OTF yang status 1 (aktif)
+    for (const entry of allEntries) {
+      const code = String(entry.product_code ?? entry.products_code ?? '');
+      const isOtf = code.toUpperCase().startsWith('OTF_');
+      const isActive = Number(entry.status) === 1;
+      if (isOtf || isActive) {
+        const p = Number(entry.base_price ?? 0);
+        if (p > maxPrice) maxPrice = p;
+      }
+    }
+    logSync('Step 3c: maxPrice (untuk update product) setelah include non-OTF aktif:', maxPrice);
+
+    // Step 4: update products price dengan harga terbesar (POST products/update_price)
     const currentProductPrice = Number(socxProduct.price || 0);
     let productPriceUpdated = false;
     logSync('Step 4: products/update_price | product id:', socxProduct.id, '| current:', currentProductPrice, '| max_price:', maxPrice);
