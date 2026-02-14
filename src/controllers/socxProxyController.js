@@ -459,20 +459,22 @@ exports.syncIsimpleProductPrices = async (req, res) => {
       logSync('Step 2c: Tidak ada entry OTF_* yang perlu dihapus');
     }
 
-    // Step 2d: Jika frontend mengirim hanya 1 (atau beberapa) modul terpilih: hapus SEMUA entry produk ini
-    // yang modulnya BUKAN yang dipilih, supaya di SOCX hanya tersisa modul yang dipilih. Tidak peduli
-    // product_code ada di request atau tidak — yang penting: entry dengan suppliers_modules_id di luar
-    // selectedIdSet dihapus. Contoh: request suppliers_module_ids: [40] → hapus entry id 8846 (modul 42).
+    // Step 2d: Jika frontend mengirim hanya 1 (atau beberapa) modul terpilih: hapus hanya entry OTF_*
+    // yang modulnya BUKAN yang dipilih. Kode non-OTF (selain OTF_*) di modul lain TIDAK dihapus,
+    // supaya hanya OTF yang diselaraskan dengan modul terpilih; kode lain (mis. FIM1, RCRP) tetap aman.
     if (selectedIdSet != null) {
       const toDeleteOtherModules = modules.filter((m) => {
+        const pc = String(m?.product_code || '').trim().toUpperCase();
         const mid = getEntryModuleId(m);
-        const shouldDel = mid != null && !selectedIdSet.has(mid);
-        if (isDev) logSync('  2d check: id=', m.id, '| product_code:', m.product_code, '| moduleId:', mid, '| in selected:', selectedIdSet.has(mid), '→ delete:', shouldDel);
+        const isOtf = pc.startsWith('OTF_');
+        const notInSelectedModule = mid != null && !selectedIdSet.has(mid);
+        const shouldDel = isOtf && notInSelectedModule;
+        if (isDev) logSync('  2d check: id=', m.id, '| product_code:', pc, '| OTF:', isOtf, '| moduleId:', mid, '| in selected:', selectedIdSet.has(mid), '→ delete:', shouldDel);
         return shouldDel;
       });
-      logSync('Step 2d: toDeleteOtherModules:', toDeleteOtherModules.length, '| selectedModuleIds:', selectedModuleIds);
+      logSync('Step 2d: toDeleteOtherModules (hanya OTF_* di modul lain):', toDeleteOtherModules.length, '| selectedModuleIds:', selectedModuleIds);
       if (toDeleteOtherModules.length > 0) {
-        logSync('Step 2d: Hapus', toDeleteOtherModules.length, 'entry kode sama di modul lain (bukan', selectedModuleIds, ')');
+        logSync('Step 2d: Hapus', toDeleteOtherModules.length, 'entry OTF_* di modul lain (bukan', selectedModuleIds, ')');
         for (const entry of toDeleteOtherModules) {
           const entryId = entry.id ?? entry.pk ?? entry.products_has_suppliers_modules_id;
           if (entryId == null) {
