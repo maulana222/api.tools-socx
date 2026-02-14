@@ -102,31 +102,38 @@ class IsimpleNumber {
     const list = Array.isArray(numbers) ? numbers : [];
     if (list.length === 0) return list;
 
-    const ids = list.map((row) => row.id);
-    const placeholders = ids.map(() => '?').join(',');
-    const allPromos = await db.query(
-      `SELECT id, isimple_number_id, product_code, product_name, product_amount, product_type, product_type_title, product_commission, product_gb, product_days, is_selected, created_at FROM promo_products WHERE isimple_number_id IN (${placeholders}) ORDER BY isimple_number_id, id ASC`,
-      ids
-    );
+    const ids = list.map((row) => row.id).filter((id) => id != null);
+    if (ids.length === 0) return list;
+
+    const BATCH_SIZE = 1000;
     const promosByNumberId = {};
-    const promoList = Array.isArray(allPromos) ? allPromos : [];
-    for (const p of promoList) {
-      const nid = p.isimple_number_id;
-      if (!promosByNumberId[nid]) promosByNumberId[nid] = [];
-      promosByNumberId[nid].push({
-        id: p.id,
-        isimple_number_id: p.isimple_number_id,
-        product_code: p.product_code,
-        product_name: p.product_name,
-        product_amount: p.product_amount,
-        product_type: p.product_type,
-        product_type_title: p.product_type_title,
-        product_commission: p.product_commission,
-        product_gb: p.product_gb,
-        product_days: p.product_days,
-        is_selected: p.is_selected,
-        created_at: p.created_at
-      });
+    const columns = 'id, isimple_number_id, product_code, product_name, product_amount, product_type, product_type_title, product_commission, product_gb, product_days, is_selected, created_at';
+    for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+      const batch = ids.slice(i, i + BATCH_SIZE);
+      const placeholders = batch.map(() => '?').join(',');
+      const allPromos = await db.query(
+        `SELECT ${columns} FROM promo_products WHERE isimple_number_id IN (${placeholders}) ORDER BY isimple_number_id, id ASC`,
+        batch
+      );
+      const promoList = Array.isArray(allPromos) ? allPromos : [];
+      for (const p of promoList) {
+        const nid = p.isimple_number_id;
+        if (!promosByNumberId[nid]) promosByNumberId[nid] = [];
+        promosByNumberId[nid].push({
+          id: p.id,
+          isimple_number_id: p.isimple_number_id,
+          product_code: p.product_code,
+          product_name: p.product_name,
+          product_amount: p.product_amount,
+          product_type: p.product_type,
+          product_type_title: p.product_type_title,
+          product_commission: p.product_commission,
+          product_gb: p.product_gb,
+          product_days: p.product_days,
+          is_selected: p.is_selected,
+          created_at: p.created_at
+        });
+      }
     }
     for (const row of list) {
       row.promos = promosByNumberId[row.id] || [];

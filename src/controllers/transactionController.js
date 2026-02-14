@@ -208,3 +208,46 @@ exports.getTransactionStats = async (req, res) => {
     });
   }
 };
+
+/**
+ * Get Transaction Histories (log) from SOCX API
+ * GET /api/v1/transactions/histories/:id
+ */
+exports.getTransactionHistories = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'Transaction ID required' });
+    }
+
+    const tokenSetting = await Settings.getByKey(userId, 'socx_token');
+    if (!tokenSetting || !tokenSetting.value) {
+      return res.status(401).json({
+        success: false,
+        error: 'SOCX token not found. Please set your token in settings.'
+      });
+    }
+
+    const baseUrlSetting = await Settings.getByKey(userId, 'socx_base_url');
+    const baseUrl = baseUrlSetting?.value || 'https://indotechapi.socx.app';
+
+    const response = await axios.get(`${baseUrl}/api/v1/transactions/histories/${id}`, {
+      headers: {
+        'Authorization': `Bearer ${tokenSetting.value}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
+
+    const data = Array.isArray(response.data) ? response.data : [];
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error fetching transaction histories:', error);
+    res.status(error.response?.status || 500).json({
+      success: false,
+      error: error.response?.data?.message || 'Gagal mengambil log transaksi',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};

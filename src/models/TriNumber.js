@@ -129,7 +129,7 @@ class TriNumber {
     return r?.affectedRows ?? 0;
   }
 
-  /** Ambil semua tri_numbers di project beserta promo (tri_promo_products) */
+  /** Ambil semua tri_numbers di project beserta promo (tri_promo_products). Satu query JOIN agar cepat, hindari timeout. */
   static async getByProjectWithPromos(projectId) {
     const numbers = await db.query(
       'SELECT * FROM tri_numbers WHERE project_id = ? ORDER BY COALESCE(last_checked_at, updated_at) DESC, created_at DESC',
@@ -138,13 +138,13 @@ class TriNumber {
     const list = Array.isArray(numbers) ? numbers : [];
     if (list.length === 0) return list;
 
-    const ids = list.map((r) => r.id);
-    const placeholders = ids.map(() => '?').join(',');
-    const allPromos = await db.query(
-      `SELECT * FROM tri_promo_products WHERE tri_number_id IN (${placeholders}) ORDER BY tri_number_id, id ASC`,
-      ids
-    );
     const promosByNumberId = {};
+    const allPromos = await db.query(
+      `SELECT p.* FROM tri_promo_products p
+       INNER JOIN tri_numbers n ON n.id = p.tri_number_id AND n.project_id = ?
+       ORDER BY p.tri_number_id, p.id ASC`,
+      [projectId]
+    );
     const promoList = Array.isArray(allPromos) ? allPromos : [];
     for (const p of promoList) {
       const nid = p.tri_number_id;

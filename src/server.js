@@ -116,6 +116,7 @@ class Server {
     // Transaction routes
     this.app.get('/api/transactions', authenticateToken, TransactionController.getTransactions);
     this.app.get('/api/transactions/stats', authenticateToken, TransactionController.getTransactionStats);
+    this.app.get('/api/transactions/histories/:id', authenticateToken, TransactionController.getTransactionHistories);
     this.app.get('/api/suppliers', authenticateToken, TransactionController.getSuppliers);
 
     // Isimple Numbers routes
